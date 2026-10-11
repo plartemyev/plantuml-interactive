@@ -255,3 +255,32 @@ the airplane that you fly on, the nuclear power plant a few miles from where you
 the spacecraft that carries astronauts into orbit. The rules act like the seat-belt in your car:
 initially they are perhaps a little uncomfortable, but after a while their use becomes
 second-nature and not using them becomes unimaginable.
+
+## Tooling notes
+
+- **Local serving is required**: browsers block `fetch()` and ES module scripts
+  on `file://` pages. Serve with `python3 -m http.server 8000` (npm run serve).
+  `index.html` carries an inline watchdog that explains this if the module
+  never boots (file:// case).
+- **`diagrams/index.json` is generated**: static servers cannot list
+  directories; after adding/removing `diagrams/*.puml` run
+  `node tools/update-index.mjs`. Symlinks into `diagrams/` work (python's
+  http.server follows them; `diagrams/deployment.puml` -> `../samples/deployment.puml`).
+- **PlantUML CLI**: `/usr/bin/plantuml` (v1.2026.8). Note `-o outdir` resolves
+  *relative to the source file's directory*, not the CWD — `plantuml -tpng
+  samples/x.puml` writes next to the source unless `-o` path is adjusted.
+- **Headless Chromium screenshots**: canvas content captured with
+  `--virtual-time-budget` can be stale/unrelated to the final rAF state; plain
+  `--screenshot` also cannot run page JS first. Use
+  `node tools/screenshot.mjs <url> <out.png> ['js-expr'] [settle-ms]`
+  (CDP driver over Node's built-in WebSocket; `MOUSE=x,y` env dispatches a real
+  pointermove for tooltip testing). Chromium needs `--no-sandbox` here.
+- **CSS gotcha**: author `display:` values (e.g. `#legend { display:flex }`)
+  override the UA `[hidden] { display:none }`; `css/style.css` carries a global
+  `[hidden] { display:none !important }` guard — keep it when adding panels.
+- **Canvas silent failures**: NaN coordinates in canvas paths/fillRect do not
+  throw — they draw nothing. If something "disappears", suspect NaN before
+  suspecting paint order (this bit during development: `scene.byId` exposed
+  BFS nodes instead of placed boxes).
+- **Tests**: `node --test test/` (parser, layout, natural sort are pure modules
+  with no DOM dependency — keep it that way so they stay Node-runnable).

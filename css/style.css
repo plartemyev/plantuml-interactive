@@ -1,0 +1,257 @@
+/*
+ * plantuml-interactive is free software: GNU LGPL v3 (or later) — see LICENSE.
+ * SPDX-License-Identifier: LGPL-3.0-or-later
+ * Copyright (C) 2026 Pavel Artemyev <a@pavel.bz>
+ */
+
+/* plantuml-interactive — dark, cel-shaded HUD over a full-viewport canvas. */
+
+:root {
+  --bg: #0b0f14;
+  --panel: rgba(17, 22, 29, 0.88);
+  --panel-border: rgba(122, 143, 166, 0.25);
+  --text: #d6e2eb;
+  --muted: #8a9bb0;
+  --accent: #53e3c2;
+  --warn: #ffd166;
+  font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+/* author display values would override the UA [hidden] rule otherwise */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+#scene:active { cursor: grabbing; }
+
+.panel {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  backdrop-filter: blur(6px);
+  max-width: min(46ch, 42vw);
+}
+
+.muted { color: var(--muted); }
+
+/* title block, like an engineering drawing */
+#titlebar {
+  top: 14px;
+  left: 14px;
+  border-left: 3px solid var(--accent);
+}
+
+#titlebar .brand {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#titlebar h1 {
+  margin: 2px 0 4px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+#diagram-stats {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+}
+
+/* kind legend */
+#legend {
+  top: auto;
+  bottom: 40px;
+  left: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 10px;
+}
+
+#legend .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+#legend .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+}
+
+/* diagram list */
+#diagram-list {
+  top: 14px;
+  right: 14px;
+  min-width: 180px;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.panel-caption {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+#diagram-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#diagram-items button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+#diagram-items button:hover { background: rgba(122, 143, 166, 0.14); }
+
+#diagram-items button.active {
+  border-left-color: var(--accent);
+  background: rgba(83, 227, 194, 0.08);
+  color: var(--accent);
+}
+
+/* warnings */
+#warnings {
+  top: auto;
+  bottom: 40px;
+  right: 14px;
+  padding: 0;
+  max-width: min(64ch, 52vw);
+}
+
+#warnings-toggle {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: var(--warn);
+  font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px 12px;
+  cursor: pointer;
+  text-align: right;
+}
+
+#warning-items {
+  margin: 0;
+  padding: 2px 12px 10px;
+  list-style: none;
+  max-height: 34vh;
+  overflow: auto;
+  border-top: 1px solid var(--panel-border);
+  font-size: 11.5px;
+}
+
+#warning-items li {
+  padding: 3px 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#warning-items li b { color: var(--warn); font-weight: 500; }
+
+/* tooltip */
+#tooltip {
+  position: fixed;
+  z-index: 10;
+  pointer-events: none;
+  background: rgba(13, 17, 23, 0.96);
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  max-width: 40ch;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+#tooltip .kind {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-bottom: 4px;
+}
+
+#tooltip .ghost { color: var(--muted); font-size: 11px; }
+
+/* hint line */
+#hint {
+  position: fixed;
+  right: 14px;
+  bottom: 12px;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.75;
+}
+
+/* banner */
+#banner {
+  position: fixed;
+  inset: auto 14px 14px 14px;
+  margin: auto;
+  background: rgba(60, 34, 20, 0.92);
+  border: 1px solid #b0713f;
+  color: #ffd9b8;
+  border-radius: 6px;
+  padding: 12px 16px;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#banner code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 1px 5px;
+  border-radius: 3px;
+}

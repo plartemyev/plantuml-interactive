@@ -1,0 +1,168 @@
+# plantuml-interactive
+
+Interactive, isometric **"integrated circuit package"** rendering of PlantUML
+**deployment diagrams** — a static web page, pure JavaScript, no third-party
+frontend libraries.
+
+## Why
+
+PlantUML is excellent as *text*: diff-friendly in version control, LLM-friendly,
+easy to author. Its *rendered* deployment diagrams are another story: a pure
+layout engine scatters elements (people fight it with dozens of `-[hidden]->`
+links), containment hierarchy is drawn as thin monochrome rectangles, and dense
+infra diagrams turn into edge spaghetti. Try it:
+
+```sh
+plantuml -tpng samples/deployment.puml && xdg-viewer samples/deployment.png
+```
+
+This project keeps the text format and replaces the rendered artifact: elements
+become **IC packages** on a board, nested elements become **package-on-package
+(PoP) stacks** connected by through-silicon via (TSV) style corner pins, drawn
+in 2:1 isometric projection with cel shading.
+
+## Quick start
+
+Browsers forbid `fetch()` of local files on `file://` pages, so serve the
+directory over HTTP:
+
+```sh
+python3 -m http.server 8000
+# open http://localhost:8000/
+```
+
+Then:
+
+- **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
+- **hover a package** — animated exploded view: children spread and lift,
+  TSV vias become dashed leaders
+- **hover a leaf** — it pops off the board
+- **wheel over an element** — changes its opacity (ghost it to see what is
+  underneath)
+- **click an element** — pin selection (hover-level focus stays)
+- labels, edge labels and notes appear progressively with zoom level (LOD)
+
+## Adding diagrams
+
+1. Put or link `.puml` files into `diagrams/` (deployment-style syntax;
+   symlinks are fine — the bundled `diagrams/deployment.puml` links to
+   `samples/deployment.puml`).
+2. Regenerate the catalog (the page cannot list a directory over HTTP):
+
+   ```sh
+   node tools/update-index.mjs
+   ```
+
+If more than one diagram is listed, a selector appears in the top-right
+corner; the first naturally-sorted diagram (`3-tier-web` before
+`deployment-10` before `deployment-2`) loads on start.
+
+## Supported .puml subset
+
+- Element declarations: `node`, `cloud`, `database`, `queue`, `frame`,
+  `package`, `folder`, `card`, `component`, `rectangle`, `storage`, `stack`,
+  `actor`, `agent`, `boundary`, `control`, `entity`, `interface`, `file`,
+  `label`, `person`, `hexagon`, `artifact`, `usecase` — with `"quoted labels"`
+  (including `\n` escapes and strings spanning physical lines), `as alias`,
+  `<<stereotypes>>`, and nested `{ ... }` blocks.
+- `port` / `portin` / `portout` inside elements: rendered as pin slots on the
+  parent package; relations through ports attach to the parent at the port's
+  slot.
+- Relations: `-->`, `..>`, `--`, `..`, `<-->`, direction hints (`-up->`),
+  bracket annotations (`-[hidden]->`, `-[#color]->`, `bold`, `dotted`,
+  `dashed`), `: labels` (multi-line via `\n`).
+- `note left|right|top|bottom of X` (block and inline), `note as N`.
+- `title`, `@startuml name`.
+- `together { }` blocks (transparent grouping).
+- Tolerated and ignored: `skinparam`, `!pragma`, `!theme`, `!include`,
+  `hide/show`, `scale`, `set`, `legend`, direction directives.
+- Undeclared aliases referenced in relations are auto-created (as PlantUML
+  does — it renders them as actors) and produce a visible parser warning.
+
+Anything unrecognized is skipped with a warning (badge in the bottom-right
+corner) — the parser never throws on bad input.
+
+## Architecture
+
+```
+index.html            page shell + boot watchdog (file:// guidance)
+css/style.css         HUD panels (title block, legend, list, warnings, tooltip)
+js/parser.js          tolerant .puml -> model (elements, relations, notes)
+js/textutil.js        label wrapping (shared by layout + tests)
+js/layout.js          deterministic containment-tree layout:
+                      grid packing per container, PoP z-stacking,
+                      edge pin assignment (face + slot), painter order
+js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
+                      packages, TSV vias, wire routing (stub-elbow-via-elbow),
+                      LOD tiers, exploded-view animation, hit testing
+js/main.js            catalog loading, HUD wiring, debug hooks
+diagrams/             your .puml files + generated index.json
+samples/              reference diagrams (stock PlantUML comparison)
+tools/update-index.mjs  rebuilds diagrams/index.json
+tools/screenshot.mjs    headless Chromium screenshot driver (CDP, no deps)
+test/                 Node built-in test-runner suites (parser, layout, sort)
+```
+
+Parser and layout are pure modules (no DOM), unit-tested with `node --test`:
+
+```sh
+npm test          # or: node --test test/
+```
+
+### Layout model
+
+- World space: `x/y` = board plane, `z` = up. Children sit **on top** of their
+  parent (`z0 = parent.z1 + gap`), like stacked IC packages.
+- Siblings are packed into a grid; the packer tries every column count and
+  keeps the most square-ish result. Declaration order is preserved.
+- Containers reserve a front **silkscreen strip** on their top face for the
+  title, like PCB silkscreen.
+- Wires leave a package through side-face **pins** (spread along the face to
+  avoid overlap), run one elbow at mid-path, change height with a vertical
+  **via**, and enter the target through its pin.
+- Painter order is `(z0, x+y diagonal)`; elements of one diagram always lay
+  out identically (deterministic, snapshot-tested).
+
+### Current limitations
+
+- Occlusion is painter-sorted, not a z-buffer: rare cross-subtree overlaps can
+  draw in a wrong order (mitigated by hover-explode).
+- Wires are drawn above packages (translucent) rather than truly occluded;
+  `-​[hidden]-` relations are used only as parser input, they are not drawn.
+- Edge labels show their first line at route midpoint.
+- No minimap, no search, no editing — read-only visualization by design.
+
+## Development
+
+```sh
+npm run serve      # python3 -m http.server 8000
+npm test           # unit tests
+npm run index      # regenerate diagrams/index.json
+node tools/screenshot.mjs http://localhost:8000/ out.png \
+     'window.__view.hover("ecs")'   # scripted interactive screenshots
+```
+
+See `AGENTS.md` for tooling notes (headless Chromium quirks, PlantUML CLI
+peculiarities).
+
+## License
+
+plantuml-interactive is licensed under the **GNU Lesser General Public
+License v3.0** — the same license family as PlantUML itself.
+
+- `LICENSE` — the full GNU LGPL-3.0 text
+- `COPYING` — the full GNU GPL-3.0 text, which the LGPL incorporates by
+  reference and which must accompany it
+
+SPDX identifier: `LGPL-3.0-or-later`. Every source file carries a matching
+SPDX header.
+
+Copyright © 2026 Pavel Artemyev &lt;a@pavel.bz&gt;
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. This program is distributed in the hope that it
+will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
+General Public License for more details.

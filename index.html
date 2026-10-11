@@ -1,0 +1,65 @@
+<!doctype html>
+<!--
+  plantuml-interactive — interactive isometric renderer for PlantUML
+  deployment diagrams.
+  SPDX-License-Identifier: LGPL-3.0-or-later
+  Copyright (C) 2026 Pavel Artemyev <a@pavel.bz>
+  This program is free software: GNU Lesser General Public License v3.0
+  or later (see LICENSE; the text of the GNU GPL v3 ships as COPYING).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>plantuml-interactive</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <header id="titlebar" class="panel" hidden>
+    <div class="brand">plantuml&#8209;interactive</div>
+    <h1 id="diagram-title"></h1>
+    <div id="diagram-stats" class="muted"></div>
+  </header>
+
+  <div id="legend" class="panel" hidden></div>
+
+  <nav id="diagram-list" class="panel" hidden>
+    <div class="panel-caption">diagrams</div>
+    <ul id="diagram-items"></ul>
+  </nav>
+
+  <div id="warnings" class="panel" hidden>
+    <button id="warnings-toggle" type="button"></button>
+    <ul id="warning-items" hidden></ul>
+  </div>
+
+  <div id="tooltip" hidden></div>
+
+  <footer id="hint" class="muted">
+    drag&nbsp;pan &middot; wheel&nbsp;zoom &middot; wheel&nbsp;on&nbsp;part&nbsp;opacity &middot; hover&nbsp;explode &middot; click&nbsp;pin &middot; dblclick&nbsp;fit
+  </footer>
+
+  <div id="banner" hidden>
+    <div id="banner-text"></div>
+  </div>
+
+  <noscript><div id="banner">JavaScript is required for the interactive renderer.</div></noscript>
+
+  <script>window.__booted = false;</script>
+  <script type="module" src="js/main.js"></script>
+  <script>
+    // ES modules are CORS-blocked on file:// — if the app never boots, explain.
+    setTimeout(function () {
+      if (window.__booted) return;
+      var b = document.getElementById('banner');
+      document.getElementById('banner-text').innerHTML =
+        'The interactive renderer could not start. This page must be served over HTTP ' +
+        '(browsers forbid module scripts and local diagram fetches on <code>file://</code>). Run:<br>' +
+        '<code>python3 -m http.server 8000</code> &nbsp;then open <code>http://localhost:8000/</code>';
+      b.hidden = false;
+    }, 2500);
+  </script>
+</body>
+</html>

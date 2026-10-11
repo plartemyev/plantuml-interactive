@@ -1,0 +1,41 @@
+@startuml 3-tier-web
+' Minimal 3-tier example showing nesting, notes and ports.
+
+cloud "Internet" as net
+
+node "edge VPC" as edge {
+  frame "DMZ subnet" as dmz {
+    node "CDN origin shield" as shield
+    node "WAF\nlayer 7 rules" as waf
+  }
+}
+
+node "app VPC" as app {
+  frame "app subnet" as appsub {
+    node "web frontend\n2 replicas\nport 443" as web {
+      portin https
+      portout appcalls
+    }
+    node "api service\n3 replicas\nport 8080" as api {
+      portin appcalls
+      portout dbcalls
+    }
+  }
+  frame "data subnet" as datasub {
+    database "PostgreSQL 16\nprimary + replica" as pg
+    queue "job queue" as jobs
+  }
+  note right of pg
+    nightly snapshot,
+    PITR window 7 days
+  end note
+}
+
+net --> waf : 443
+waf --> shield
+shield --> https : TLS terminate
+appcalls --> api : REST/JSON
+dbcalls --> pg : 5432
+api --> jobs : enqueue
+jobs ..> pg : poll
+@enduml

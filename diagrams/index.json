@@ -1,0 +1,6 @@
+{
+  "diagrams": [
+    "3-tier-web.puml",
+    "deployment.puml"
+  ]
+}

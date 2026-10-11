@@ -1,0 +1,13 @@
+{
+  "name": "plantuml-interactive",
+  "version": "0.1.0",
+  "description": "Interactive isometric 'IC package' renderer for PlantUML deployment diagrams",
+  "type": "module",
+  "private": true,
+  "license": "LGPL-3.0-or-later",
+  "scripts": {
+    "test": "node --test test/",
+    "serve": "python3 -m http.server 8000",
+    "index": "node tools/update-index.mjs"
+  }
+}
