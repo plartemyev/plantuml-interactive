@@ -18,8 +18,35 @@ plantuml -tpng samples/deployment.puml && xdg-viewer samples/deployment.png
 
 This project keeps the text format and replaces the rendered artifact: elements
 become **IC packages** on a board, nested elements become **package-on-package
-(PoP) stacks** connected by through-silicon via (TSV) style corner pins, drawn
-in 2:1 isometric projection with cel shading.
+(PoP) stacks** connected by through-silicon via (TSV) style corner pins, and
+relations are **autorouted as copper traces on a 2-layer board** — the same
+way a real PCB connects its components. Everything is drawn in 2:1 isometric
+projection with cel shading.
+
+## PCB routing pipeline
+
+Relations are not drawn as wires in the air: they become **nets on a 2-layer
+board**, routed by [Freerouting](https://freerouting.org) (GPL, the standard
+open-source autorouter) through a KiCad round-trip. Each diagram layout is
+exported as a board (packages = keepout rule areas on both copper layers, pin
+slots = SMD pads, stacked blocks = TSV landing pads with escape corridors),
+autorouted headlessly, and the resulting tracks/vias are stored as
+`diagrams/<name>.routes.json` which the renderer paints as base-layer copper
+(dimmed for the underside layer, vias as donuts, layer stacks as TSV columns).
+
+```sh
+npm run route      # (re)route all diagrams; --force to ignore freshness
+```
+
+Toolchain requirements (build-time only, the page itself stays dependency-free):
+
+- `python3` with the `pcbnew` module (the `kicad` package);
+- Java ≥ 25 and the Freerouting jar at `tools/vendor/freerouting.jar`
+  (or `$FREEROUTING_JAR`), e.g.:
+  `curl -L -o tools/vendor/freerouting.jar https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar`
+
+Diagrams without a routes file (or individual unrouted nets) fall back to the
+legacy airborne wires, so adding a `.puml` never blocks rendering.
 
 ## Quick start
 
@@ -39,7 +66,8 @@ Then:
 - **hover a leaf** — it pops off the board
 - **wheel over an element** — changes its opacity (ghost it to see what is
   underneath)
-- **click an element** — pin selection (hover-level focus stays)
+- **click an element** — pin selection (hover-level focus stays; its nets
+  highlight on the copper)
 - labels, edge labels and notes appear progressively with zoom level (LOD)
 
 ## Adding diagrams
@@ -47,10 +75,11 @@ Then:
 1. Put or link `.puml` files into `diagrams/` (deployment-style syntax;
    symlinks are fine — the bundled `diagrams/deployment.puml` links to
    `samples/deployment.puml`).
-2. Regenerate the catalog (the page cannot list a directory over HTTP):
+2. Regenerate the catalog and route the board:
 
    ```sh
    node tools/update-index.mjs
+   npm run route          # needs the toolchain above; optional
    ```
 
 If more than one diagram is listed, a selector appears in the top-right
@@ -91,16 +120,23 @@ js/parser.js          tolerant .puml -> model (elements, relations, notes)
 js/textutil.js        label wrapping (shared by layout + tests)
 js/layout.js          deterministic containment-tree layout:
                       grid packing per container, PoP z-stacking,
-                      edge pin assignment (face + slot), painter order
+                      edge pin assignment (face + slot, port slots claimed
+                      first), painter order
 js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
-                      packages, TSV vias, wire routing (stub-elbow-via-elbow),
-                      LOD tiers, exploded-view animation, hit testing
+                      packages, base-layer copper tracks + vias (routes.json),
+                      TSV columns, LOD tiers, exploded-view animation,
+                      hit testing
 js/main.js            catalog loading, HUD wiring, debug hooks
-diagrams/             your .puml files + generated index.json
+diagrams/             your .puml files + generated index.json + *.routes.json
 samples/              reference diagrams (stock PlantUML comparison)
 tools/update-index.mjs  rebuilds diagrams/index.json
-tools/screenshot.mjs    headless Chromium screenshot driver (CDP, no deps)
-test/                 Node built-in test-runner suites (parser, layout, sort)
+tools/route-board.mjs   PCB routing driver (layout -> board spec -> KiCad ->
+                        Freerouting -> diagrams/<name>.routes.json)
+tools/lib/boardgeo.mjs  pure board geometry + Specctra .ses parsing (tested)
+tools/kicad_route.py    builds the KiCad board, exports DSN, runs Freerouting
+tools/vendor/           freerouting.jar (not committed)
+test/                 Node built-in test-runner suites (parser, layout, sort,
+                      pcb routing geometry)
 ```
 
 Parser and layout are pure modules (no DOM), unit-tested with `node --test`:
@@ -118,8 +154,11 @@ npm test          # or: node --test test/
 - Containers reserve a front **silkscreen strip** on their top face for the
   title, like PCB silkscreen.
 - Wires leave a package through side-face **pins** (spread along the face to
-  avoid overlap), run one elbow at mid-path, change height with a vertical
-  **via**, and enter the target through its pin.
+  avoid overlap); pins attached through ports keep the port's declared slot
+  and the remaining pins spread over the free slots. Routed nets become
+  copper on the 2-layer board (see the routing pipeline above); stacked
+  blocks connect through a **through-chip via (TSV)** down to their landing
+  pad on the base layer.
 - Painter order is `(z0, x+y diagonal)`; elements of one diagram always lay
   out identically (deterministic, snapshot-tested).
 
@@ -127,8 +166,8 @@ npm test          # or: node --test test/
 
 - Occlusion is painter-sorted, not a z-buffer: rare cross-subtree overlaps can
   draw in a wrong order (mitigated by hover-explode).
-- Wires are drawn above packages (translucent) rather than truly occluded;
-  `-​[hidden]-` relations are used only as parser input, they are not drawn.
+- Copper routed on the underside (B.Cu) is drawn translucent; it is not
+  z-occluded by the board, only styled dimmer.
 - Edge labels show their first line at route midpoint.
 - No minimap, no search, no editing — read-only visualization by design.
 
@@ -138,6 +177,7 @@ npm test          # or: node --test test/
 npm run serve      # python3 -m http.server 8000
 npm test           # unit tests
 npm run index      # regenerate diagrams/index.json
+npm run route      # re-route the boards (KiCad + Freerouting toolchain)
 node tools/screenshot.mjs http://localhost:8000/ out.png \
      'window.__view.hover("ecs")'   # scripted interactive screenshots
 ```

@@ -284,3 +284,40 @@ second-nature and not using them becomes unimaginable.
   BFS nodes instead of placed boxes).
 - **Tests**: `node --test test/` (parser, layout, natural sort are pure modules
   with no DOM dependency — keep it that way so they stay Node-runnable).
+- **PCB routing pipeline** (`npm run route`): relations are autorouted as
+  copper on a 2-layer board via KiCad + Freerouting. Peculiarities discovered
+  empirically (KiCad 10.0.7, Freerouting 2.5.0):
+  - Freerouting 2.5.0 jar requires **Java ≥ 25** (class file 69): use
+    `/usr/lib/jvm/java-27-openjdk/bin/java`; the system default is Java 17.
+    The `freerouting-cli-*` native-image binaries crash on DSNs containing
+    keepouts (`UnsupportedFeatureError: ObstacleArea serialization`) — use
+    the plain jar, not the CLI distribution. Headless batch:
+    `java -jar freerouting.jar -de x.dsn -do x.ses -mp 40 -mt 1` (exits by
+    itself; `-mt 1` keeps results deterministic).
+  - A board with **no via padstack at all** crashes Freerouting 2.5
+    (`NullPointerException ... viaRule is null`). To get 2-layer routing we
+    keep vias and mirror every F.Cu keepout onto B.Cu instead of blocking
+    B.Cu entirely.
+  - pcbnew SWIG (system `python3`, module `pcbnew`): **every proxy added to
+    the board must be kept alive** in a Python list (PCB_SHAPE, ZONE, the
+    SHAPE_POLY_SET passed to `SetOutline`, NETINFO_ITEM, FOOTPRINT, PAD) —
+    garbage-collecting them segfaults `SaveBoard`/`ExportSpecctraDSN`
+    (symptom: sporadic SIGSEGV in ~100% of runs when the zone constructor is
+    a function whose locals die).
+  - `pcbnew.LSET(int)` / `LSET([...])` ctors are broken in this build (TypeError
+    or SIGSEGV); use `pcbnew.PAD.SMDMask()` for SMD pads.
+  - `pcbnew.NewBoard(path)` requires the filename argument.
+  - `ExportSpecctraDSN` / `ImportSpecctraSES` are **module-level** functions,
+    not BOARD methods. `ImportSpecctraSES` returns False silently — parse the
+    `.ses` directly instead (`tools/lib/boardgeo.mjs sesToWorld`).
+  - DSN/SES mirror the y axis (Specctra y-up vs KiCad y-down) and each file
+    carries its own `(resolution <unit> <div>)` header; convert with
+    `world = value/div/100` (µm→0.1 mm world units), y negated.
+  - pcbnew prints harmless wx asserts ("PROPERTY_ENUM ... No enum choices
+    defined") on stderr of every invocation — filter, don't fix.
+  - Freerouting occasionally emits disconnected debris stubs in the SES;
+    `chainSegments` drops them and validates the chain reaches the far pad.
+  - Layout pin spread vs ports: ports claim their declared slot first, plain
+    pins spread over the remaining slots (js/layout.js). Without this, a port
+    pin and a spread pin can share a spot — harmless for the old airborne
+    wires but a short (unroutable net) for PCB pads.

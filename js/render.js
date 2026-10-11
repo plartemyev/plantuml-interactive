@@ -12,7 +12,7 @@
 //
 // Pure Canvas 2D + ES modules, no third-party code.
 
-import { M } from './layout.js';
+import { M, PIN_NORMALS, pinWorld } from './layout.js';
 
 // Kind → base color (top face derives from this; sides darken).
 export const PALETTE = {
@@ -40,6 +40,14 @@ const TEXT_ON_FACE = 'rgba(7, 12, 16, 0.92)';
 const SILKSCREEN = 'rgba(214, 226, 235, 0.85)';
 const EDGE_DIM = '126, 143, 166';
 const ACCENT = '#53e3c2';
+// PCB copper: a dark solder-mask outline under a copper core. B.Cu is the
+// board underside — same hue, dimmer, so layer changes read as such.
+const COPPER = 'rgba(206, 141, 79, 0.62)';
+const COPPER_B = 'rgba(206, 141, 79, 0.30)';
+const COPPER_DIM = 'rgba(206, 141, 79, 0.26)';
+const COPPER_DIM_B = 'rgba(206, 141, 79, 0.15)';
+const COPPER_MASK = 'rgba(6, 8, 10, 0.9)';
+const VIA_HOLE = '#0a0e13';
 
 const STUB = 14;        // wire stub length leaving a package pin
 const SPREAD = 42;      // in-plane explode distance for children
@@ -85,6 +93,7 @@ export function createRenderer(canvas, hooks = {}) {
   let pointer = { x: 0, y: 0 };
   let dragging = null; // {startX, startY, camSX, camSY, moved}
   let focusEdges = new Set(); // edges of hovered/selected element, per frame
+  let routeView = new Map();  // edge index -> routed net {path, vias, ends}
   let raf = 0;
   let lastT = 0;
   let dashOffset = 0;
@@ -197,6 +206,8 @@ export function createRenderer(canvas, hooks = {}) {
     drawBoard();
     const view = viewBounds();
     focusEdges = edgeFocusSet();
+    dashOffset -= 0.55;
+    drawRoutes(eff);
     for (const b of scene.boxes) {
       const o = boxOrigin(b, eff.get(b.id));
       if (boxOutsideView(b, o, view)) continue;
@@ -204,6 +215,23 @@ export function createRenderer(canvas, hooks = {}) {
     }
     drawEdges(eff);
     drawNotes(eff);
+  }
+
+  // Indexes the routed board (if the diagram has one): edge -> copper path.
+  // Edges without a route (self loops, unroutable, or no routes.json) keep
+  // the airborne fallback wire.
+  function buildRouteView() {
+    routeView = new Map();
+    for (const e of scene.edges) e.routed = false;
+    const routes = scene.routes;
+    if (!routes || !routes.nets) return;
+    for (const [idxStr, r] of Object.entries(routes.nets)) {
+      const idx = Number(idxStr);
+      const e = scene.edges[idx];
+      if (!e || r.unrouted || !Array.isArray(r.path) || r.path.length < 2) continue;
+      e.routed = true;
+      routeView.set(idx, r);
+    }
   }
 
   function viewBounds() {
@@ -427,18 +455,172 @@ export function createRenderer(canvas, hooks = {}) {
     hulls.push({ id: b.id, poly, minx, miny, maxx, maxy });
   }
 
-  // ---- edges -------------------------------------------------------------
+  // ---- base-layer copper -------------------------------------------------
 
-  function pinWorld(b, o, pin) {
-    const t = pin.t;
-    const z = o.z0 + (o.z1 - o.z0) / 2;
-    if (pin.face === 0) return { x: o.x + b.w, y: o.y + b.d * t, z, face: pin.face };
-    if (pin.face === 1) return { x: o.x + b.w * t, y: o.y + b.d, z, face: pin.face };
-    if (pin.face === 2) return { x: o.x, y: o.y + b.d * t, z, face: pin.face };
-    return { x: o.x + b.w * t, y: o.y, z, face: pin.face };
+  // Traces routed by Freerouting live on the board surface, so they are
+  // painted right after the board and before the packages (which occlude
+  // them, like real copper running under a component body). B.Cu hops are
+  // drawn dimmer — the underside of the board.
+  function drawRoutes(eff) {
+    if (routeView.size === 0) return;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    const focusActive = focusEdges.size > 0;
+    const traceW = (scene.routes.traceW ?? 2) / cam.scale;
+    for (const [idx, r] of routeView) {
+      const e = scene.edges[idx];
+      const isFocus = focusEdges.has(e);
+      const alpha = ghostAlpha(e);
+      const pts = r.path.map(([x, y]) => project(x, y, 0.3));
+      ctx.globalAlpha = alpha;
+      // mask pass: one dark outline under the whole route
+      strokePath(pts, COPPER_MASK, traceW + 2.4 / cam.scale);
+      if (isFocus) {
+        ctx.setLineDash([9 / cam.scale, 6 / cam.scale]);
+        ctx.lineDashOffset = dashOffset / cam.scale;
+        strokeGlow(pts, e.color ?? ACCENT, traceW * 1.2);
+        ctx.setLineDash([]);
+      } else {
+        for (const layerPath of layerSubpaths(r)) {
+          strokePath(layerPath.pts, focusActive
+            ? (layerPath.layer === 0 ? COPPER_DIM : COPPER_DIM_B)
+            : (layerPath.layer === 0 ? COPPER : COPPER_B), traceW);
+        }
+      }
+      drawRouteVias(r);
+      drawRoutePads(pts);
+      drawRouteEnds(e, r, eff, isFocus);
+      const lineColor = isFocus ? (e.color ?? ACCENT) : focusActive ? COPPER_DIM : COPPER;
+      if (e.arrow || e.bidir) drawFlatArrow(pts[pts.length - 2], pts[pts.length - 1], lineColor);
+      if (e.bidir) drawFlatArrow(pts[1], pts[0], lineColor);
+      ctx.globalAlpha = 1;
+    }
   }
 
-  const NORMALS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  // Splits the chained segments into runs of consecutive same-layer segments
+  // (projected). Segment rows are [x1, y1, x2, y2, layer].
+  function layerSubpaths(r) {
+    const runs = [];
+    let cur = null;
+    for (const s of r.segs ?? []) {
+      const layer = s[4] ?? 0;
+      if (!cur || cur.layer !== layer) {
+        cur = { layer, pts: [project(s[0], s[1], 0.3)] };
+        runs.push(cur);
+      }
+      cur.pts.push(project(s[2], s[3], 0.3));
+    }
+    return runs.length > 0 ? runs : [{ layer: 0, pts: [] }];
+  }
+
+  function strokePath(pts, color, width) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+
+  function strokeGlow(pts, color, width) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 7;
+    strokePath(pts, color, width);
+    ctx.restore();
+  }
+
+  function drawRouteVias(r) {
+    const rad = (scene.routes.viaR ?? 3) / cam.scale;
+    for (const [x, y] of r.vias ?? []) {
+      const p = project(x, y, 0.3);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
+      ctx.fillStyle = COPPER;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rad * 0.45, 0, Math.PI * 2);
+      ctx.fillStyle = VIA_HOLE;
+      ctx.fill();
+    }
+  }
+
+  function drawRoutePads(pts) {
+    const rad = (scene.routes.padR ?? 3) / cam.scale;
+    for (const p of [pts[0], pts[pts.length - 1]]) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
+      ctx.fillStyle = COPPER;
+      ctx.fill();
+      ctx.strokeStyle = COPPER_MASK;
+      ctx.lineWidth = 0.8 / cam.scale;
+      ctx.stroke();
+    }
+  }
+
+  // Connection between a package and its landing pad: top-level packages
+  // grow a short gull-wing lead, stacked dies drop a through-chip via (TSV)
+  // straight down to the base layer (dashed leader while the stack is
+  // exploded).
+  function drawRouteEnds(e, r, eff, isFocus) {
+    for (let k = 0; k < r.ends.length; k++) {
+      const end = r.ends[k];
+      const b = scene.byId.get(end.box);
+      if (!b) continue;
+      const eEff = eff.get(end.box);
+      const o = boxOrigin(b, eEff);
+      const pw = pinWorld(b, o, k === 0 ? e.fromPin : e.toPin);
+      const top = project(pw.x, pw.y, pw.z);
+      const bot = project(end.land[0], end.land[1], 0.3);
+      if (end.stacked) {
+        const pEff = b.parentId ? eff.get(b.parentId) : null;
+        const lifted = eEff.lift > 2 || (pEff && pEff.lift > 2);
+        ctx.save();
+        ctx.strokeStyle = lifted || isFocus ? 'rgba(83, 227, 194, 0.85)' : 'rgba(10, 14, 18, 0.9)';
+        ctx.lineWidth = (lifted ? 1.6 : 2.6) / cam.scale;
+        if (lifted) ctx.setLineDash([5 / cam.scale, 4 / cam.scale]);
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(bot.x, bot.y);
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.strokeStyle = isFocus ? (e.color ?? ACCENT) : COPPER;
+        ctx.lineWidth = 1.4 / cam.scale;
+        ctx.beginPath();
+        ctx.moveTo(top.x, top.y);
+        ctx.lineTo(bot.x, bot.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(top.x, top.y, 1.3 / cam.scale, 0, Math.PI * 2);
+        ctx.fillStyle = isFocus ? (e.color ?? ACCENT) : COPPER;
+        ctx.fill();
+      }
+    }
+  }
+
+  // Arrow head flat on the board plane (points are already projected).
+  function drawFlatArrow(a, b, color) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const s = 8 / cam.scale;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x - ux * s - uy * s * 0.5, b.y - uy * s + ux * s * 0.5);
+    ctx.lineTo(b.x - ux * s + uy * s * 0.5, b.y - uy * s - ux * s * 0.5);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // ---- edges -------------------------------------------------------------
+
+  const NORMALS = PIN_NORMALS;
 
   function routePoints(e, byId, effMap) {
     const a = byId.get(e.fromId);
@@ -489,7 +671,6 @@ export function createRenderer(canvas, hooks = {}) {
     const lod = lodTier();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    dashOffset -= 0.55;
     if (lod.edgeLabels !== 'none') {
       for (const e of scene.edges) {
         if (e.hidden || !e.label) continue;
@@ -497,12 +678,14 @@ export function createRenderer(canvas, hooks = {}) {
         drawEdgeLabel(e, eff);
       }
     }
+    // routed edges are already on the base layer; only the airborne
+    // fallback wires (self loops, unrouted, missing routes.json) remain
     for (const e of scene.edges) {
-      if (e.hidden || focusEdges.has(e)) continue;
+      if (e.hidden || e.routed || focusEdges.has(e)) continue;
       strokeRoute(e, eff, `rgba(${EDGE_DIM}, 0.50)`, 1.5 / cam.scale, false);
     }
     for (const e of focusEdges) {
-      if (e.hidden) continue;
+      if (e.hidden || e.routed) continue;
       ctx.setLineDash([9 / cam.scale, 6 / cam.scale]);
       ctx.lineDashOffset = dashOffset / cam.scale;
       strokeRoute(e, eff, e.color ?? ACCENT, 2.2 / cam.scale, true);
@@ -559,8 +742,15 @@ export function createRenderer(canvas, hooks = {}) {
   }
 
   function drawEdgeLabel(e, eff) {
-    const pts = routePoints(e, scene.byId, eff);
-    const m = pts[Math.floor(pts.length / 2) - 1] ?? pts[0];
+    let m;
+    const r = e.routed ? routeView.get(scene.edges.indexOf(e)) : null;
+    if (r) {
+      const mid = r.path[Math.floor(r.path.length / 2)];
+      m = { x: mid[0], y: mid[1], z: 6 };
+    } else {
+      const pts = routePoints(e, scene.byId, eff);
+      m = pts[Math.floor(pts.length / 2) - 1] ?? pts[0];
+    }
     const p = project(m.x, m.y, m.z);
     const first = (e.label ?? '').split('\n')[0];
     if (!first) return;
@@ -830,6 +1020,7 @@ export function createRenderer(canvas, hooks = {}) {
       anim.clear();
       hoverId = null;
       selectedId = null;
+      buildRouteView();
       resize();
       fit();
       if (!raf) raf = requestAnimationFrame(frame);

@@ -33,6 +33,7 @@ window.__booted = true; // inline watchdog in index.html checks this (file:// ca
 
 const state = {
   diagrams: [],
+  routes: new Set(),
   current: null,
 };
 
@@ -80,6 +81,7 @@ async function loadCatalog() {
     return;
   }
   state.diagrams = naturalSort(catalog.diagrams ?? []);
+  state.routes = new Set(catalog.routes ?? []);
   if (state.diagrams.length === 0) {
     showError('No diagrams listed in <code>diagrams/index.json</code>.');
     return;
@@ -120,6 +122,16 @@ async function loadDiagram(name) {
   }
   const model = parsePlantUml(text);
   const scene = buildScene(model);
+  const routesName = name.replace(/\.puml$/i, '.routes.json');
+  if (state.routes.has(routesName)) {
+    try {
+      scene.routes = JSON.parse(await fetchText(`diagrams/${encodeURIComponent(routesName)}`));
+    } catch {
+      scene.routes = null; // fall back to airborne wires
+    }
+  } else {
+    scene.routes = null;
+  }
   renderer.load(scene);
   updateHud(name, model, scene);
 }

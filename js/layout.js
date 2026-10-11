@@ -210,7 +210,7 @@ export function buildScene(model) {
   const groups = new Map();
   for (const p of pending) {
     if (p.r.self) continue;
-    assignFace(p, centers);
+    assignFace(p, centers, model.elements);
     for (const end of ['a', 'b']) {
       const e = p[end];
       const key = e.box.id + ':' + e.face;
@@ -218,23 +218,29 @@ export function buildScene(model) {
       groups.get(key).push(e);
     }
   }
+  // Pin slots: relations attached through a port keep their declared slot;
+  // the rest spread over the remaining slots of the face (sorted by the
+  // cross position of the opposite end). Ports claim slots first so a
+  // spread pin can never land on the same spot as a port pin.
   for (const list of groups.values()) {
     list.sort((u, v) => u.cross - v.cross);
-    for (let k = 0; k < list.length; k++) {
-      list[k].t = M.pinMin + (M.pinMax - M.pinMin) * ((k + 1) / (list.length + 1));
+    const claimed = new Set();
+    for (const e of list) {
+      if (!e.port || e.box.kind === 'port' || e.port.portIndex < 0) continue;
+      const n = Math.max(e.box.ports ? e.box.ports.length : 1, e.port.portIndex + 1);
+      e.t = M.pinMin + (M.pinMax - M.pinMin) * ((e.port.portIndex + 1) / (n + 1));
+      claimed.add(Math.round(e.t * 1000));
     }
-  }
-  // Ports override the fraction with a slot derived from declaration order.
-  for (const p of pending) {
-    for (const end of ['a', 'b']) {
-      const portId = end === 'a' ? p.r.fromPort : p.r.toPort;
-      if (!portId) continue;
-      const port = model.elements.get(portId);
-      const host = positions.get(p[end].box.id);
-      if (port && host && host.kind !== 'port' && port.portIndex >= 0) {
-        const n = Math.max(host.ports ? host.ports.length : 1, port.portIndex + 1);
-        p[end].t = M.pinMin + (M.pinMax - M.pinMin) * ((port.portIndex + 1) / (n + 1));
+    let k = 0;
+    for (const e of list) {
+      if (e.t != null) continue;
+      let t = M.pinMin + (M.pinMax - M.pinMin) * ((k + 1) / (list.length + 1));
+      while (claimed.has(Math.round(t * 1000)) && k < list.length) {
+        k += 1;
+        t = M.pinMin + (M.pinMax - M.pinMin) * ((k + 1) / (list.length + 1));
       }
+      k += 1;
+      e.t = t;
     }
   }
 
@@ -280,17 +286,37 @@ export function buildScene(model) {
   };
 }
 
+// World-space position of a face pin: `o` is the placed origin
+// {x, y, z0, z1} (already including any explode offsets). Face normals
+// point outward: 0:+x, 1:+y, 2:-x, 3:-y.
+export const PIN_NORMALS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+
+export function pinWorld(b, o, pin) {
+  const t = pin.t;
+  const z = o.z0 + (o.z1 - o.z0) / 2;
+  if (pin.face === 0) return { x: o.x + b.w, y: o.y + b.d * t, z, face: pin.face };
+  if (pin.face === 1) return { x: o.x + b.w * t, y: o.y + b.d, z, face: pin.face };
+  if (pin.face === 2) return { x: o.x, y: o.y + b.d * t, z, face: pin.face };
+  return { x: o.x + b.w * t, y: o.y, z, face: pin.face };
+}
+
 // Chooses which side face each endpoint's pin sits on (0:+x, 1:+y, 2:-x, 3:-y)
 // and records the cross-axis coordinate used to spread pins later.
-function assignFace(p, centers) {
+function assignFace(p, centers, elements) {
   const ca = centers.get(p.a.id);
   const cb = centers.get(p.b.id);
   const dx = cb.cx - ca.cx;
   const dy = cb.cy - ca.cy;
   const fa = faceFor(dx, dy);
   const fb = faceFor(-dx, -dy);
-  p.a = { box: p.a, face: fa, t: null, cross: crossCoord(fa, cb) };
-  p.b = { box: p.b, face: fb, t: null, cross: crossCoord(fb, ca) };
+  p.a = {
+    box: p.a, face: fa, t: null, cross: crossCoord(fa, cb),
+    port: elements.get(p.r.fromPort) ?? null,
+  };
+  p.b = {
+    box: p.b, face: fb, t: null, cross: crossCoord(fb, ca),
+    port: elements.get(p.r.toPort) ?? null,
+  };
 }
 
 function faceFor(dx, dy) {
