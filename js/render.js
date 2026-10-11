@@ -212,7 +212,7 @@ export function createRenderer(canvas, hooks = {}) {
     for (const b of scene.boxes) {
       const o = boxOrigin(b, eff.get(b.id));
       if (boxOutsideView(b, o, view)) continue;
-      drawBox(b, o, eff, eff.get(b.id));
+      drawBox(b, o, eff.get(b.id));
     }
     drawEdges(eff);
     drawNotes(eff);
@@ -280,7 +280,7 @@ export function createRenderer(canvas, hooks = {}) {
     ctx.stroke();
   }
 
-  function drawBox(b, o, effMap, eff) {
+  function drawBox(b, o, eff) {
     const pal = paletteFor(b.kind);
     const A = project(o.x, o.y, o.z1);
     const B = project(o.x + b.w, o.y, o.z1);
@@ -301,7 +301,6 @@ export function createRenderer(canvas, hooks = {}) {
     strokePoly([A, B, C, D], OUTLINE, 1.2 / cam.scale);
     strokePoly([B0, C0, D0], OUTLINE, 1.2 / cam.scale);
     strokePoly([C, C0], OUTLINE, 1.2 / cam.scale);
-    drawVias(b, o, effMap, eff);
     drawFaceDetails(b, o, A, B, D);
     recordHull(b, [A, B, C, D, C0, D0, A0, B0]);
     ctx.globalAlpha = 1;
@@ -323,33 +322,6 @@ export function createRenderer(canvas, hooks = {}) {
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.stroke();
-  }
-
-  // TSV / through-chip vias: corner columns connecting a child package down
-  // into its parent; dashed leaders appear while the stack is exploded.
-  function drawVias(b, o, effMap, eff) {
-    const parent = b.parentId ? scene.byId.get(b.parentId) : null;
-    if (!parent) return;
-    const pEff = effMap.get(b.parentId);
-    const lifted = eff.lift - pEff.lift > 2 || pEff.lift > 2;
-    const corners = [
-      [o.x + 6, o.y + 6], [o.x + b.w - 6, o.y + 6],
-      [o.x + 6, o.y + b.d - 6], [o.x + b.w - 6, o.y + b.d - 6],
-    ];
-    const pz1 = parent.z1 + pEff.lift;
-    ctx.save();
-    ctx.strokeStyle = lifted ? 'rgba(83, 227, 194, 0.85)' : 'rgba(10, 14, 18, 0.9)';
-    ctx.lineWidth = (lifted ? 1.6 : 2.6) / cam.scale;
-    if (lifted) ctx.setLineDash([5 / cam.scale, 4 / cam.scale]);
-    ctx.beginPath();
-    for (const [cx, cy] of corners) {
-      const top = project(cx, cy, o.z0);
-      const bot = project(cx, cy, pz1);
-      ctx.moveTo(top.x, top.y);
-      ctx.lineTo(bot.x, bot.y);
-    }
-    ctx.stroke();
-    ctx.restore();
   }
 
   // Silkscreen title (containers) and printed label (top faces).

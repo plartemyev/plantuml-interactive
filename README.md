@@ -18,10 +18,9 @@ plantuml -tpng samples/deployment.puml && xdg-viewer samples/deployment.png
 
 This project keeps the text format and replaces the rendered artifact: elements
 become **IC packages** on a board, nested elements become **package-on-package
-(PoP) stacks** connected by through-silicon via (TSV) style corner pins, and
-relations are **autorouted as copper traces on a 2-layer board** — the same
-way a real PCB connects its components. Everything is drawn in 2:1 isometric
-projection with cel shading.
+(PoP) stacks**, and relations are **autorouted as copper traces on a 2-layer
+board** — the same way a real PCB connects its components. Everything is drawn
+in 2:1 isometric projection with cel shading.
 
 ## PCB routing pipeline
 
@@ -32,7 +31,7 @@ exported as a board (packages = keepout rule areas on both copper layers, pin
 slots = SMD pads, stacked blocks = TSV landing pads with escape corridors),
 autorouted headlessly, and the resulting tracks/vias are stored as
 `diagrams/<name>.routes.json` which the renderer paints as base-layer copper
-(dimmed for the underside layer, vias as donuts, layer stacks as TSV columns).
+(dimmed for the underside layer, vias as donuts).
 
 ```sh
 npm run route      # (re)route all diagrams; --force to ignore freshness
@@ -62,7 +61,7 @@ Then:
 
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
 - **hover a package** — animated exploded view: children spread and lift,
-  TSV vias become dashed leaders
+  relation pins drop as dashed leaders to their landing pads
 - **hover a leaf** — it pops off the board
 - **wheel over an element** — changes its opacity (ghost it to see what is
   underneath)
@@ -124,7 +123,7 @@ js/layout.js          deterministic containment-tree layout:
                       first), painter order
 js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       packages, base-layer copper tracks + vias (routes.json),
-                      TSV columns, LOD tiers, exploded-view animation,
+                      pin leads, LOD tiers, exploded-view animation,
                       hit testing
 js/main.js            catalog loading, HUD wiring, debug hooks
 diagrams/             your .puml files + generated index.json + *.routes.json
