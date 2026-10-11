@@ -60,14 +60,15 @@ python3 -m http.server 8000
 Then:
 
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
-- **hover a package** — animated exploded view: children spread and lift,
-  relation pins drop as dashed leaders to their landing pads
-- **hover a leaf** — it pops off the board
-- **wheel over an element** — changes its opacity (ghost it to see what is
-  underneath)
-- **click an element** — pin selection (hover-level focus stays; its nets
-  highlight on the copper)
-- labels, edge labels and notes appear progressively with zoom level (LOD)
+- **click a package** — pin the selection: animated exploded view (children
+  spread and lift, relation pins drop as dashed leaders to their landing
+  pads), its nets glow on the copper, and occluding packages fade to 30% so
+  every traced connection stays visible; notes of the package and of its net
+  neighbors appear. **Click empty space** to deselect and revert everything.
+- **hover a package** — tooltip only (the scene never changes under the cursor)
+- labels and edge labels appear progressively with zoom level (LOD); notes
+  are hidden entirely until a package is selected
+- rendering is capped at ~30 fps and skips redraws entirely while idle
 
 ## Adding diagrams
 
@@ -123,8 +124,10 @@ js/layout.js          deterministic containment-tree layout:
                       first), painter order
 js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       packages, base-layer copper tracks + vias (routes.json),
-                      pin leads, LOD tiers, exploded-view animation,
-                      hit testing
+                      pin leads, LOD tiers, selection explode + net tracing,
+                      occluder ghosting, ~30 fps cap + idle skip, hit testing
+js/occlude.js         pure board-level occlusion math (package silhouettes vs
+                      copper paths, world space; tested)
 js/main.js            catalog loading, HUD wiring, debug hooks
 diagrams/             your .puml files + generated index.json + *.routes.json
 samples/              reference diagrams (stock PlantUML comparison)
@@ -135,7 +138,7 @@ tools/lib/boardgeo.mjs  pure board geometry + Specctra .ses parsing (tested)
 tools/kicad_route.py    builds the KiCad board, exports DSN, runs Freerouting
 tools/vendor/           freerouting.jar (not committed)
 test/                 Node built-in test-runner suites (parser, layout, sort,
-                      pcb routing geometry)
+                      occlusion, pcb routing geometry)
 ```
 
 Parser and layout are pure modules (no DOM), unit-tested with `node --test`:
@@ -164,7 +167,11 @@ npm test          # or: node --test test/
 ### Current limitations
 
 - Occlusion is painter-sorted, not a z-buffer: rare cross-subtree overlaps can
-  draw in a wrong order (mitigated by hover-explode).
+  draw in a wrong order (mitigated by the click-explode).
+- Occluder ghosting for traced nets is computed once at selection time, from
+  resting positions — a package that stops (or starts) covering a trace only
+  because of the explode animation itself is not re-evaluated until the next
+  selection.
 - Copper routed on the underside (B.Cu) is drawn translucent; it is not
   z-occluded by the board, only styled dimmer.
 - Edge labels show their first line at route midpoint.
@@ -178,8 +185,13 @@ npm test           # unit tests
 npm run index      # regenerate diagrams/index.json
 npm run route      # re-route the boards (KiCad + Freerouting toolchain)
 node tools/screenshot.mjs http://localhost:8000/ out.png \
-     'window.__view.hover("ecs")'   # scripted interactive screenshots
+     'window.__view.select("ecs")'   # scripted interactive screenshots
 ```
+
+Debug hooks on `window.__view` (used by headless screenshots; harmless
+otherwise): `hover(id)`, `select(id)`, `fit()`, `zoom(f)`, read-only `scale`,
+`drawMs` (smoothed draw cost) and `draws` (frames actually painted — with the
+idle skip this stays flat while the page sits still).
 
 See `AGENTS.md` for tooling notes (headless Chromium quirks, PlantUML CLI
 peculiarities).

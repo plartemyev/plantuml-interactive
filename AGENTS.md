@@ -284,6 +284,12 @@ second-nature and not using them becomes unimaginable.
   BFS nodes instead of placed boxes).
 - **Tests**: `node --test test/` (parser, layout, natural sort are pure modules
   with no DOM dependency — keep it that way so they stay Node-runnable).
+- **Headless perf numbers are not wall-clock truth**: headless Chromium
+  (`--disable-gpu`) throttles rAF unpredictably (20–55 fps observed), so fps
+  figures from `tools/screenshot.mjs` are meaningless. Measure with the
+  `window.__view.drawMs` / `__view.draws` debug hooks instead: `drawMs` is a
+  smoothed per-draw cost (comparable across runs at identical view/zoom), and
+  `draws` over a fixed interval verifies the idle skip / fps cap.
 - **PCB routing pipeline** (`npm run route`): relations are autorouted as
   copper on a 2-layer board via KiCad + Freerouting. Peculiarities discovered
   empirically (KiCad 10.0.7, Freerouting 2.5.0):

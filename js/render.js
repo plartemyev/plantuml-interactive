@@ -6,13 +6,19 @@
 //
 // - 2:1 dimetric projection, cel-shaded boxes (flat top/left/right shades)
 // - nesting rendered as package-on-package stacking with corner TSV vias
-// - hover: animated exploded view (children spread + lift, leaves pop up)
-// - wheel over element: changes its opacity (ghosting); otherwise zooms
+// - click: pin a package — animated exploded view (children spread + lift,
+//   leaves pop up), its nets glow on the copper, occluding packages ghost
+//   to 30% so every trace stays visible; notes of the package and of its
+//   net neighbors appear. Nothing is shown until a click selects a package.
+// - hover: tooltip only
+// - wheel: zoom
 // - level-of-detail: labels/notes/edge labels appear by zoom tier
+// - frame pacing: ~30 fps cap, and no redraws at all while idle
 //
 // Pure Canvas 2D + ES modules, no third-party code.
 
 import { M, PIN_NORMALS, pinWorld } from './layout.js';
+import { findOccluders } from './occlude.js';
 
 // Kind → base color (top face derives from this; sides darken).
 export const PALETTE = {
@@ -52,8 +58,10 @@ const VIA_HOLE = '#0a0e13';
 const STUB = 14;        // wire stub length leaving a package pin
 const SPREAD = 42;      // in-plane explode distance for children
 const LIFT_CHILD = 30;  // vertical explode lift for children
-const LIFT_SELF = 12;   // hovered container pops slightly itself
-const LIFT_LEAF = 38;   // hovered leaf pops off the board
+const LIFT_SELF = 12;   // selected container pops slightly itself
+const LIFT_LEAF = 38;   // selected leaf pops off the board
+const OCCLUDE_ALPHA = 0.3;              // ghost level for trace occluders
+const FRAME_MIN_MS = 1000 / 30;         // power-saving render cap: ~30 fps
 
 const KY = 0.5; // 2:1 dimetric: sy = (x + y) * KY - z
 
@@ -92,12 +100,17 @@ export function createRenderer(canvas, hooks = {}) {
   let hulls = []; // rebuilt per frame: {id, poly, minx, miny, maxx, maxy}
   let pointer = { x: 0, y: 0 };
   let dragging = null; // {startX, startY, camSX, camSY, moved}
-  let focusEdges = new Set(); // edges of hovered/selected element, per frame
-  let routeView = new Map();  // edge index -> routed net {path, vias, ends}
+  let focusEdges = new Set(); // edges of the selected element, per selection
+  let focusNets = new Set();  // selected element + direct net neighbors
+  let needsDraw = true;       // redraw only when something changed
+  let routeView = new Map();  // edge index -> {raw, pts, runs, viaPts, midPt}
   let glyphFit = 1; // uniform kind-glyph scale, computed once per scene load
   let raf = 0;
   let lastT = 0;
+  let lastFrameT = -1e9;
   let dashOffset = 0;
+  let drawMs = 0; // smoothed draw() cost, for the debug hook
+  let draws = 0;  // frames actually painted, for the debug hook
 
   // ---- dynamic state -----------------------------------------------------
 
@@ -110,12 +123,12 @@ export function createRenderer(canvas, hooks = {}) {
     return s;
   }
 
-  // Recompute every explode target from scratch for the current hover.
+  // Recompute every explode target from scratch for the current selection.
   function retarget() {
     for (const s of anim.values()) {
       s.tdx = 0; s.tdy = 0; s.tlift = 0;
     }
-    const id = hoverId ?? selectedId;
+    const id = selectedId;
     if (!id || !scene) return;
     const box = scene.byId.get(id);
     if (!box) return;
@@ -148,6 +161,42 @@ export function createRenderer(canvas, hooks = {}) {
       s.lift += (s.tlift - s.lift) * k;
       s.ghost += (s.tghost - s.ghost) * k;
     }
+  }
+
+  // True while any explode/ghost state is still easing toward its target.
+  function animating() {
+    for (const s of anim.values()) {
+      if (Math.abs(s.dx - s.tdx) > 0.05 || Math.abs(s.dy - s.tdy) > 0.05
+        || Math.abs(s.lift - s.tlift) > 0.05 || Math.abs(s.ghost - s.tghost) > 0.002) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Selection: explode the package, trace its nets, reveal the notes of the
+  // package and of its net neighbors, and ghost every package that covers
+  // any traced copper (so the traces stay visible). Reverts on deselect.
+  function applySelection(id) {
+    selectedId = id;
+    retarget();
+    focusEdges = edgeFocusSet();
+    focusNets = new Set();
+    for (const s of anim.values()) s.tghost = 1;
+    if (id && scene) {
+      focusNets.add(id);
+      const paths = [];
+      for (const e of focusEdges) {
+        focusNets.add(e.fromId);
+        focusNets.add(e.toId);
+        const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
+        if (rv) paths.push(rv.raw.path);
+      }
+      for (const oid of findOccluders(scene.boxes, paths, id)) {
+        stateOf(oid).tghost = OCCLUDE_ALPHA;
+      }
+    }
+    needsDraw = true;
   }
 
   // Parent offsets propagate to descendants (painter order guarantees
@@ -206,9 +255,8 @@ export function createRenderer(canvas, hooks = {}) {
     const eff = effectiveOffsets();
     drawBoard();
     const view = viewBounds();
-    focusEdges = edgeFocusSet();
     dashOffset -= 0.55;
-    drawRoutes(eff);
+    drawRoutes(eff, view);
     for (const b of scene.boxes) {
       const o = boxOrigin(b, eff.get(b.id));
       if (boxOutsideView(b, o, view)) continue;
@@ -220,10 +268,14 @@ export function createRenderer(canvas, hooks = {}) {
 
   // Indexes the routed board (if the diagram has one): edge -> copper path.
   // Edges without a route (self loops, unroutable, or no routes.json) keep
-  // the airborne fallback wire.
+  // the airborne fallback wire. Projections of the static copper are cached
+  // per scene load — they depend on world coordinates only, not the camera.
   function buildRouteView() {
     routeView = new Map();
-    for (const e of scene.edges) e.routed = false;
+    for (const e of scene.edges) {
+      e.routed = false;
+      delete e.routeIdx;
+    }
     const routes = scene.routes;
     if (!routes || !routes.nets) return;
     for (const [idxStr, r] of Object.entries(routes.nets)) {
@@ -231,7 +283,22 @@ export function createRenderer(canvas, hooks = {}) {
       const e = scene.edges[idx];
       if (!e || r.unrouted || !Array.isArray(r.path) || r.path.length < 2) continue;
       e.routed = true;
-      routeView.set(idx, r);
+      e.routeIdx = idx;
+      const pts = r.path.map(([x, y]) => project(x, y, 0.3));
+      let minx = Infinity; let maxx = -Infinity; let miny = Infinity; let maxy = -Infinity;
+      for (const p of pts) {
+        minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
+        miny = Math.min(miny, p.y); maxy = Math.max(maxy, p.y);
+      }
+      const mid = r.path[Math.floor(r.path.length / 2)];
+      routeView.set(idx, {
+        raw: r,
+        pts,
+        bounds: { minx, maxx, miny, maxy },
+        runs: layerRuns(r),
+        viaPts: (r.vias ?? []).map(([x, y]) => project(x, y, 0.3)),
+        midPt: { x: mid[0], y: mid[1], z: 6 },
+      });
     }
   }
 
@@ -449,18 +516,22 @@ export function createRenderer(canvas, hooks = {}) {
   // painted right after the board and before the packages (which occlude
   // them, like real copper running under a component body). B.Cu hops are
   // drawn dimmer — the underside of the board.
-  function drawRoutes(eff) {
+  function drawRoutes(eff, view) {
     if (routeView.size === 0) return;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     const focusActive = focusEdges.size > 0;
     const traceW = (scene.routes.traceW ?? 2) / cam.scale;
-    for (const [idx, r] of routeView) {
+    for (const [idx, rv] of routeView) {
+      const bd = rv.bounds;
+      if (bd.maxx < view.minx || bd.minx > view.maxx || bd.maxy < view.miny || bd.miny > view.maxy) {
+        continue; // net entirely outside the viewport
+      }
       const e = scene.edges[idx];
       const isFocus = focusEdges.has(e);
-      const alpha = ghostAlpha(e);
-      const pts = r.path.map(([x, y]) => project(x, y, 0.3));
-      ctx.globalAlpha = alpha;
+      const pts = rv.pts;
+      // traced nets stay at full alpha even when an endpoint is ghosted
+      ctx.globalAlpha = isFocus ? 1 : ghostAlpha(e);
       // mask pass: one dark outline under the whole route
       strokePath(pts, COPPER_MASK, traceW + 2.4 / cam.scale);
       if (isFocus) {
@@ -469,15 +540,15 @@ export function createRenderer(canvas, hooks = {}) {
         strokeGlow(pts, e.color ?? ACCENT, traceW * 1.2);
         ctx.setLineDash([]);
       } else {
-        for (const layerPath of layerSubpaths(r)) {
-          strokePath(layerPath.pts, focusActive
-            ? (layerPath.layer === 0 ? COPPER_DIM : COPPER_DIM_B)
-            : (layerPath.layer === 0 ? COPPER : COPPER_B), traceW);
+        for (const run of rv.runs) {
+          strokePath(run.pts, focusActive
+            ? (run.layer === 0 ? COPPER_DIM : COPPER_DIM_B)
+            : (run.layer === 0 ? COPPER : COPPER_B), traceW);
         }
       }
-      drawRouteVias(r);
+      drawRouteVias(rv);
       drawRoutePads(pts);
-      drawRouteEnds(e, r, eff, isFocus);
+      drawRouteEnds(e, rv.raw, eff, isFocus);
       const lineColor = isFocus ? (e.color ?? ACCENT) : focusActive ? COPPER_DIM : COPPER;
       if (e.arrow || e.bidir) drawFlatArrow(pts[pts.length - 2], pts[pts.length - 1], lineColor);
       if (e.bidir) drawFlatArrow(pts[1], pts[0], lineColor);
@@ -486,8 +557,9 @@ export function createRenderer(canvas, hooks = {}) {
   }
 
   // Splits the chained segments into runs of consecutive same-layer segments
-  // (projected). Segment rows are [x1, y1, x2, y2, layer].
-  function layerSubpaths(r) {
+  // (projected). Segment rows are [x1, y1, x2, y2, layer]. Called once per
+  // scene load; the result is camera-independent.
+  function layerRuns(r) {
     const runs = [];
     let cur = null;
     for (const s of r.segs ?? []) {
@@ -498,7 +570,7 @@ export function createRenderer(canvas, hooks = {}) {
       }
       cur.pts.push(project(s[2], s[3], 0.3));
     }
-    return runs.length > 0 ? runs : [{ layer: 0, pts: [] }];
+    return runs;
   }
 
   function strokePath(pts, color, width) {
@@ -520,10 +592,9 @@ export function createRenderer(canvas, hooks = {}) {
     ctx.restore();
   }
 
-  function drawRouteVias(r) {
+  function drawRouteVias(rv) {
     const rad = (scene.routes.viaR ?? 3) / cam.scale;
-    for (const [x, y] of r.vias ?? []) {
-      const p = project(x, y, 0.3);
+    for (const p of rv.viaPts) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
       ctx.fillStyle = COPPER;
@@ -646,7 +717,7 @@ export function createRenderer(canvas, hooks = {}) {
   }
 
   function edgeFocusSet() {
-    const id = hoverId ?? selectedId;
+    const id = selectedId;
     const set = new Set();
     if (!id) return set;
     for (const e of scene.edges) {
@@ -676,14 +747,14 @@ export function createRenderer(canvas, hooks = {}) {
       if (e.hidden || e.routed) continue;
       ctx.setLineDash([9 / cam.scale, 6 / cam.scale]);
       ctx.lineDashOffset = dashOffset / cam.scale;
-      strokeRoute(e, eff, e.color ?? ACCENT, 2.2 / cam.scale, true);
+      strokeRoute(e, eff, e.color ?? ACCENT, 2.2 / cam.scale, true, true);
       ctx.setLineDash([]);
     }
   }
 
-  function strokeRoute(e, eff, color, width, glow) {
+  function strokeRoute(e, eff, color, width, glow, ignoreGhost) {
     const pts = routePoints(e, scene.byId, eff);
-    const ga = ghostAlpha(e);
+    const ga = ignoreGhost ? 1 : ghostAlpha(e);
     ctx.globalAlpha = ga;
     ctx.beginPath();
     for (let i = 0; i < pts.length; i++) {
@@ -731,10 +802,9 @@ export function createRenderer(canvas, hooks = {}) {
 
   function drawEdgeLabel(e, eff) {
     let m;
-    const r = e.routed ? routeView.get(scene.edges.indexOf(e)) : null;
-    if (r) {
-      const mid = r.path[Math.floor(r.path.length / 2)];
-      m = { x: mid[0], y: mid[1], z: 6 };
+    const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
+    if (rv) {
+      m = rv.midPt;
     } else {
       const pts = routePoints(e, scene.byId, eff);
       m = pts[Math.floor(pts.length / 2) - 1] ?? pts[0];
@@ -763,9 +833,14 @@ export function createRenderer(canvas, hooks = {}) {
   // ---- notes -------------------------------------------------------------
 
   function drawNotes(eff) {
+    if (!selectedId) return; // notes stay hidden until a package is clicked
     const lod = lodTier();
     if (lod.notes === 'none') return;
     for (const n of scene.notes) {
+      // the selected package, its net neighbors, and floating notes
+      if (n.targetId != null && n.targetId !== selectedId && !focusNets.has(n.targetId)) {
+        continue;
+      }
       let anchor;
       if (n.targetId) {
         const b = scene.byId.get(n.targetId);
@@ -872,6 +947,7 @@ export function createRenderer(canvas, hooks = {}) {
     cam.sx = (minx + maxx) / 2;
     cam.sy = (miny + maxy) / 2;
     if (cam.scale < 0.001) cam.scale = 0.001;
+    needsDraw = true;
   }
 
   function zoomAt(px, py, factor) {
@@ -880,11 +956,17 @@ export function createRenderer(canvas, hooks = {}) {
     const after = screenToIso(px, py);
     cam.sx += before.x - after.x;
     cam.sy += before.y - after.y;
+    needsDraw = true;
   }
 
   // ---- frame loop --------------------------------------------------------
 
+  // Capped at ~30 fps (a diagram is not a video game), and fully idle —
+  // zero redraws — while nothing animates, moves or ticks.
   function frame(t) {
+    raf = requestAnimationFrame(frame);
+    if (t - lastFrameT < FRAME_MIN_MS - 1.5) return;
+    lastFrameT = t;
     const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
     lastT = t;
     const cw = canvas.clientWidth;
@@ -893,9 +975,13 @@ export function createRenderer(canvas, hooks = {}) {
       resize();
       fit();
     }
+    if (!needsDraw && !animating() && focusEdges.size === 0) return;
     stepAnim(dt);
+    const t0 = performance.now();
     draw();
-    raf = requestAnimationFrame(frame);
+    drawMs = drawMs * 0.9 + (performance.now() - t0) * 0.1;
+    draws += 1;
+    needsDraw = false;
   }
 
   function resize() {
@@ -904,6 +990,7 @@ export function createRenderer(canvas, hooks = {}) {
     H = canvas.clientHeight;
     canvas.width = Math.max(1, Math.round(W * dpr));
     canvas.height = Math.max(1, Math.round(H * dpr));
+    needsDraw = true;
   }
 
   // ---- events ------------------------------------------------------------
@@ -912,7 +999,6 @@ export function createRenderer(canvas, hooks = {}) {
     const id = hitTest(px, py);
     if (id !== hoverId) {
       hoverId = id;
-      retarget();
       if (hooks.onHover) {
         hooks.onHover(hoverPayload(px, py));
       }
@@ -924,13 +1010,11 @@ export function createRenderer(canvas, hooks = {}) {
   function hoverPayload(px, py) {
     if (!hoverId || !scene) return null;
     const b = scene.byId.get(hoverId);
-    const s = stateOf(hoverId);
     return {
       id: hoverId,
       kind: b.kind,
       lines: b.lines,
       stereotype: b.stereotype,
-      ghost: s.ghost,
       x: px,
       y: py,
     };
@@ -946,6 +1030,7 @@ export function createRenderer(canvas, hooks = {}) {
       if (Math.hypot(dx, dy) > 4) dragging.moved = true;
       cam.sx = dragging.camSX - dx / cam.scale;
       cam.sy = dragging.camSY - dy / cam.scale;
+      needsDraw = true;
       return;
     }
     updateHover(pointer.x, pointer.y);
@@ -963,8 +1048,7 @@ export function createRenderer(canvas, hooks = {}) {
 
   canvas.addEventListener('pointerup', (ev) => {
     if (dragging && !dragging.moved) {
-      selectedId = dragging.hitId; // click empty space clears selection
-      retarget();
+      applySelection(dragging.hitId); // click on empty space deselects
       if (hooks.onHover) hooks.onHover(hoverPayload(pointer.x, pointer.y));
     }
     dragging = null;
@@ -973,7 +1057,6 @@ export function createRenderer(canvas, hooks = {}) {
   canvas.addEventListener('pointerleave', () => {
     if (hoverId) {
       hoverId = null;
-      retarget();
       if (hooks.onHover) hooks.onHover(null);
     }
   });
@@ -985,15 +1068,8 @@ export function createRenderer(canvas, hooks = {}) {
     const r = canvas.getBoundingClientRect();
     const px = ev.clientX - r.left;
     const py = ev.clientY - r.top;
-    const hit = hitTest(px, py);
-    if (hit && !ev.ctrlKey) {
-      const s = stateOf(hit);
-      const step = ev.deltaY < 0 ? 0.1 : -0.1;
-      s.tghost = Math.max(0.12, Math.min(1, s.tghost + step));
-    } else {
-      zoomAt(px, py, Math.exp(-ev.deltaY * 0.0014));
-    }
-    if (hooks.onHover) hooks.onHover(hoverPayload(px, py));
+    zoomAt(px, py, Math.exp(-ev.deltaY * 0.0014));
+    updateHover(px, py);
   }, { passive: false });
 
   window.addEventListener('resize', () => {
@@ -1010,8 +1086,8 @@ export function createRenderer(canvas, hooks = {}) {
       glyphFit = computeGlyphFit();
       anim.clear();
       hoverId = null;
-      selectedId = null;
       buildRouteView();
+      applySelection(null);
       resize();
       fit();
       if (!raf) raf = requestAnimationFrame(frame);
@@ -1019,16 +1095,13 @@ export function createRenderer(canvas, hooks = {}) {
     fit,
     zoom(f) { zoomAt(W / 2, H / 2, f); },
     get scale() { return cam.scale; },
+    get drawMs() { return drawMs; },
+    get draws() { return draws; },
     debugHover(id) {
       hoverId = id;
-      retarget();
-    },
-    debugGhost(id, v) {
-      stateOf(id).tghost = Math.max(0.12, Math.min(1, v));
     },
     debugSelect(id) {
-      selectedId = id;
-      retarget();
+      applySelection(id);
     },
   };
 }

@@ -206,12 +206,6 @@ function showTooltip(payload) {
     if (payload.stereotype) {
       t.appendChild(document.createTextNode(`\n<< ${payload.stereotype} >>`));
     }
-    if (payload.ghost < 0.995) {
-      const g = document.createElement('div');
-      g.className = 'ghost';
-      g.textContent = `opacity ${Math.round(payload.ghost * 100)}% — wheel to adjust`;
-      t.appendChild(g);
-    }
     tooltipState.id = payload.id;
   }
   const x = Math.min(payload.x + 16, window.innerWidth - 280);
@@ -226,9 +220,10 @@ loadCatalog();
 // Debug/test hooks (used by headless screenshots; harmless in normal use).
 window.__view = {
   hover: (id) => renderer.debugHover(id),
-  ghost: (id, v) => renderer.debugGhost(id, v),
   select: (id) => renderer.debugSelect(id),
   fit: () => renderer.fit(),
   zoom: (f) => renderer.zoom(f),
   get scale() { return renderer.scale; },
+  get drawMs() { return renderer.drawMs; },
+  get draws() { return renderer.draws; },
 };

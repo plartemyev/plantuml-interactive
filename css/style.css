@@ -222,8 +222,6 @@ html, body {
   margin-bottom: 4px;
 }
 
-#tooltip .ghost { color: var(--muted); font-size: 11px; }
-
 /* hint line */
 #hint {
   position: fixed;
