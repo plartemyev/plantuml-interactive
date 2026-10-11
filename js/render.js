@@ -94,6 +94,7 @@ export function createRenderer(canvas, hooks = {}) {
   let dragging = null; // {startX, startY, camSX, camSY, moved}
   let focusEdges = new Set(); // edges of hovered/selected element, per frame
   let routeView = new Map();  // edge index -> routed net {path, vias, ends}
+  let glyphFit = 1; // uniform kind-glyph scale, computed once per scene load
   let raf = 0;
   let lastT = 0;
   let dashOffset = 0;
@@ -395,45 +396,60 @@ export function createRenderer(canvas, hooks = {}) {
     }
   }
 
-  // Tiny kind glyph in the top-right corner of the top face.
+  // All kind glyphs share one size per scene: the largest that fits into 90%
+  // of the shortest side of the scene's smallest box, so every element can
+  // carry the same stamp. Computed once per load, independent of the camera.
+  function computeGlyphFit() {
+    const base = 20; // glyph bounding box in world units at scale 1
+    let minSide = Infinity;
+    for (const b of scene.boxes) minSide = Math.min(minSide, b.w, b.d);
+    if (minSide === Infinity) return 1;
+    return (minSide * 0.9) / base;
+  }
+
+  // Kind glyph in the top-right corner of the top face, at the shared
+  // per-scene scale (geometry is authored around its own center).
   function drawKindGlyph(b) {
     const k = b.kind;
+    const gs = glyphFit;
+    ctx.save();
+    ctx.translate(b.w - 12 * gs, 12 * gs);
+    ctx.scale(gs, gs);
     ctx.strokeStyle = 'rgba(7, 12, 16, 0.55)';
     ctx.fillStyle = 'rgba(7, 12, 16, 0.55)';
     ctx.lineWidth = 1.4;
-    const gx = b.w - 18;
-    const gy = 14;
     ctx.beginPath();
     if (k === 'database' || k === 'storage') {
-      ctx.ellipse(gx, gy, 7, 3.4, 0, 0, Math.PI * 2);
-      ctx.moveTo(gx - 7, gy); ctx.lineTo(gx - 7, gy + 6);
-      ctx.moveTo(gx + 7, gy); ctx.lineTo(gx + 7, gy + 6);
+      ctx.ellipse(0, 0, 7, 3.4, 0, 0, Math.PI * 2);
+      ctx.moveTo(-7, 0); ctx.lineTo(-7, 6);
+      ctx.moveTo(7, 0); ctx.lineTo(7, 6);
       ctx.stroke();
     } else if (k === 'cloud') {
-      ctx.arc(gx - 4, gy + 1, 3.4, 0, Math.PI * 2);
-      ctx.arc(gx + 2, gy - 1, 4, 0, Math.PI * 2);
-      ctx.arc(gx + 6, gy + 2, 3, 0, Math.PI * 2);
+      ctx.arc(-4, 1, 3.4, 0, Math.PI * 2);
+      ctx.arc(2, -1, 4, 0, Math.PI * 2);
+      ctx.arc(6, 2, 3, 0, Math.PI * 2);
       ctx.fill();
     } else if (k === 'queue') {
       for (let i = 0; i < 3; i++) {
-        ctx.moveTo(gx - 7, gy - 4 + i * 4);
-        ctx.lineTo(gx + 7, gy - 4 + i * 4);
+        ctx.moveTo(-7, -4 + i * 4);
+        ctx.lineTo(7, -4 + i * 4);
       }
       ctx.stroke();
     } else if (k === 'actor') {
-      ctx.arc(gx, gy - 3, 3, 0, Math.PI * 2);
-      ctx.moveTo(gx - 4, gy + 6);
-      ctx.quadraticCurveTo(gx, gy - 1, gx + 4, gy + 6);
+      ctx.arc(0, -3, 3, 0, Math.PI * 2);
+      ctx.moveTo(-4, 6);
+      ctx.quadraticCurveTo(0, -1, 4, 6);
       ctx.stroke();
     } else {
       // chip: square with pin marks
-      ctx.rect(gx - 5, gy - 5, 10, 10);
-      ctx.moveTo(gx - 8, gy - 2); ctx.lineTo(gx - 5, gy - 2);
-      ctx.moveTo(gx + 5, gy - 2); ctx.lineTo(gx + 8, gy - 2);
-      ctx.moveTo(gx - 8, gy + 3); ctx.lineTo(gx - 5, gy + 3);
-      ctx.moveTo(gx + 5, gy + 3); ctx.lineTo(gx + 8, gy + 3);
+      ctx.rect(-5, -5, 10, 10);
+      ctx.moveTo(-8, -2); ctx.lineTo(-5, -2);
+      ctx.moveTo(5, -2); ctx.lineTo(8, -2);
+      ctx.moveTo(-8, 3); ctx.lineTo(-5, 3);
+      ctx.moveTo(5, 3); ctx.lineTo(8, 3);
       ctx.stroke();
     }
+    ctx.restore();
   }
 
   function fitText(c, text, maxPx) {
@@ -829,10 +845,12 @@ export function createRenderer(canvas, hooks = {}) {
 
   function lodTier() {
     const s = cam.scale;
-    if (s < 0.3) return { silkDepth: 0, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: false, stereo: false };
-    if (s < 0.6) return { silkDepth: 1, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: false, stereo: false };
-    if (s < 1.2) return { silkDepth: 99, leafLines: 1, edgeLabels: 'focus', notes: 'collapsed', icons: true, stereo: false };
-    return { silkDepth: 99, leafLines: 99, edgeLabels: 'all', notes: 'full', icons: true, stereo: true };
+    // Low LOD: faces carry only the kind glyph (silk suppressed). From the
+    // middle tier on, silkscreen takes over and glyphs are hidden.
+    if (s < 0.3) return { silkDepth: -1, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: true, stereo: false };
+    if (s < 0.6) return { silkDepth: -1, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: true, stereo: false };
+    if (s < 1.2) return { silkDepth: 99, leafLines: 1, edgeLabels: 'focus', notes: 'collapsed', icons: false, stereo: false };
+    return { silkDepth: 99, leafLines: 99, edgeLabels: 'all', notes: 'full', icons: false, stereo: true };
   }
 
   // ---- hit testing -------------------------------------------------------
@@ -1017,6 +1035,7 @@ export function createRenderer(canvas, hooks = {}) {
   return {
     load(newScene) {
       scene = newScene;
+      glyphFit = computeGlyphFit();
       anim.clear();
       hoverId = null;
       selectedId = null;
