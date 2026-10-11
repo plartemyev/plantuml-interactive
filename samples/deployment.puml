@@ -1,0 +1,122 @@
+@startuml deployment
+' Abstract deployment diagram: public traffic enters through CloudFront
+' (edge WAF) and reaches a PRIVATE application ALB through CloudFront VPC
+' origins; ECS (EC2 ASG) runs the containers, with RDS / ElastiCache / SQS
+' as backing services and S3 + Lambda@Edge static/edge surfaces.
+' The "unit:" labels mirror a Terragrunt unit layout (one unit per
+' infrastructure component under live/<env>).
+
+node "Route 53" as dns {
+  card "example.com (public)\nunit: dns" as public_zone
+  card "internal.example.com (private)\nunit: network" as internal_zone
+}
+
+cloud "Internet" as internet
+cloud "CloudFront + edge WAF\nunit: waf (web ACL, us-east-1)" as waf {
+  card "managed rule groups + rate limit\nmanaged rule set scoped down away from\napp admin hosts (admin + apex/www)\nIP whitelist optional (per-subdomain,\ncurrently disabled)" as waf_acl
+  cloud "example.com + www.example.com\n(landing default behavior)\nunit: cdn" as cdn_apex
+  cloud "api.example.com\n(app API)" as cdn_api
+  cloud "admin.example.com\n(app admin UI)" as cdn_admin
+}
+cloud "CloudFront distributions (per-frontend certs)" as spa_cdn {
+  cloud "spa1.example.com SPA + API proxy\nunit: frontends/spa1" as cdn_spa1
+  cloud "spa2.example.com SPA + API proxy\nunit: frontends/spa2" as cdn_spa2
+  cloud "qr.example.com Lambda@Edge\nunit: lambdas/edge" as cdn_edge
+}
+node "Lambda app-prod-edge\n(us-east-1, Lambda@Edge)\nunit: lambdas/edge" as edge_lambda
+actor "Registrar\n(NS delegation)" as registrar
+
+node "VPC 10.0.0.0/16\nunit: network" as vpc {
+
+  frame "public subnets (2 AZ)" as public_subnets {
+    node "NAT gateway (1)" as nat
+  }
+
+  frame "private app subnets (2 AZ)" as app_subnets {
+    node "Application ALB (PRIVATE)\nHTTPS from CF origin-facing\nprefix list only\nunit: alb" as alb
+    node "CloudFront VPC origin\nunit: alb" as vpc_origin
+    node "Internal ALB\nunit: internal-alb" as ialb
+    node "Bastion (SSM-only)\negress: SSM vpce 443, DB subnets\n5432/6379, ssh-targets SG 22\nunit: bastion" as bastion
+    node "DB bootstrap Lambda\n(role/database provisioning)\nunit: databases/app" as provisioner
+    node "ElastiCache Serverless (TLS)\napp cache db 0 - unit: cache" as cache
+    node "ECS cluster app-prod-cluster\nEC2 ASG (capacity provider)\nunit: cluster" as ecs {
+      node "task: web app\nport 8000\nunit: services/app" as webapp
+      node "task: background worker\nunit: services/app" as worker
+      node "task: internal service\nport 9090\nKMS-encrypted payloads" as internal_svc
+    }
+    note right of ecs
+      node SG egress (hardened):
+      443 anywhere, 80 anywhere,
+      5432 -> db subnets,
+      6379 -> app subnets
+    end note
+  }
+
+  frame "private db subnets (2 AZ)" as db_subnets {
+    database "RDS app-db\nPostgreSQL 17\nunit: databases/app" as rds_app
+    database "RDS service-db\nPostgreSQL 17\nunit: databases/service" as rds_service
+    database "ElastiCache Redis (service)\nunit: databases/service" as redis_service
+  }
+
+  frame "Gateway VPC endpoints (free)\nroutes in private RTs" as vpce {
+    node "S3 Gateway Endpoint\napp-vpce-s3" as s3_vpce
+    node "DynamoDB Gateway Endpoint\n(no consumers yet)" as ddb_vpce
+  }
+}
+
+cloud "ECR\napp/web, app/service, app/tools\nunit: ecr" as ecr
+database "Secrets Manager\napp_web (IaC-generated)\napp_web_external (manual)\napp_web_rds / app_web_db\napp_service_db" as secrets
+database "S3 app-cdn-logs-prod\n(CloudFront access logs, unit: logs/cdn)\nGlacier @90d, expire @370d" as cdn_logs
+database "S3 app-vpc-flow-logs-prod\n(VPC Flow Logs, unit: network)\nGlacier @90d, expire @370d" as flow_logs
+database "S3 app-cloudtrail-prod\n(CloudTrail, unit: cloudtrail)\nGlacier @90d, expire @370d" as cloudtrail
+database "S3 app-frontends-prod\n(app files: templates, icons)\nunit: s3" as s3
+database "S3 SPA buckets (private, OAC)\napp-spa1-prod - unit: frontends/spa1\napp-spa2-prod - unit: frontends/spa2" as spa_s3
+database "S3 app-landing-prod\n(landing static files, private, OAC)\nunit: cdn" as landing_s3
+database "S3 app-tf-state\n(IaC state, versioned, lockfiles)" as state_bucket
+queue "SQS app-worker-queue\nworker broker\nunit: services/app" as sqs_worker
+
+internet --> waf : 443
+waf --> cdn : web ACL attached per subdomain
+internet --> spa_cdn : 443 (spa1 / spa2 / qr.example.com)
+registrar ..> public_zone : delegates NS
+public_zone --> cdn_apex : example.com + www.example.com\n(A alias records, apex)
+public_zone --> spa_cdn : spa1 / spa2 / qr.example.com (A aliases)
+cdn --> alb : VPC origins (api/admin default\nbehaviors; apex /admin, /admin/*, /static/*)
+cdn_spa1 --> alb : VPC origin (/api/*, /pages/*)
+cdn_spa2 --> alb : VPC origin (/api/*)
+cdn_apex --> landing_s3 : OAC (default behavior)
+public_zone --> cdn_api : api.example.com (A alias, record\nowned by the app service unit)
+public_zone --> cdn_admin : admin.example.com (A alias)
+cdn_spa1 --> spa_s3 : OAC (SPA dist/, default behavior)
+cdn_spa2 --> spa_s3 : OAC (SPA dist/, default behavior)
+cdn_edge --> edge_lambda : origin-request Lambda@Edge\n(/<random path>*)
+alb --> webapp : TG app-tg (port 8000, health /status/)
+webapp --> ialb : http://service.internal.example.com
+ialb --> internal_svc : TG app-service-tg (port 9090, health / 404)
+webapp --> cache : rediss:// (app cache db 0)
+webapp --> sqs_worker : SendMessage (task publish)
+webapp --> rds_app : 5432 (app db role)
+worker --> sqs_worker : Receive/Delete (long poll)
+worker --> rds_app : 5432
+internal_svc --> rds_service : 5432
+internal_svc --> redis_service : 6379
+provisioner --> rds_app : 5432 (CREATE ROLE/DATABASE)
+provisioner --> secrets : GetSecretValue
+ecs --> ecr : image pull (API via NAT)
+ecs --> s3_vpce : ECR image layers (S3)
+bastion --> rds_app : 5432 (SSM port-forward, db subnets)
+bastion --> rds_service : 5432 (SSM port-forward, db subnets)
+bastion --> redis_service : 6379 (db subnets)
+bastion --> ecs : SSH 22 (ssh-targets SG)
+webapp --> s3_vpce : task-role read (app files)
+s3_vpce --> s3
+app_subnets --> nat : egress (HTTPS)
+nat --> internet
+cdn ..> cdn_logs : standard access logs (per prefix)
+vpc ..> flow_logs : VPC Flow Logs (ALL)
+cloudtrail ..> cloudtrail : management events
+
+edge_lambda -[hidden]--> ecr
+spa_s3 -[hidden]-> state_bucket
+state_bucket -[hidden]-> secrets
+@enduml
