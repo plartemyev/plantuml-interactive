@@ -275,6 +275,14 @@ second-nature and not using them becomes unimaginable.
   `node tools/screenshot.mjs <url> <out.png> ['js-expr'] [settle-ms]`
   (CDP driver over Node's built-in WebSocket; `MOUSE=x,y` env dispatches a real
   pointermove for tooltip testing). Chromium needs `--no-sandbox` here.
+  The eval expression runs with `awaitPromise: true` — an async IIFE can
+  chain diagram switch (click the `#diagram-items` button) + `__view.select()`.
+  Frame a target with `window.__view.focus(id)`; wheel-zoom to hardcoded
+  screen coordinates is NOT reproducible across runs (the fit() scale after a
+  diagram switch depends on the scene), synthetic `WheelEvent`s on the canvas
+  only work right after a camera op you control. `?tsvlab=1` reveals the
+  hidden TSV parameter panel; `window.__view.tsv({...})` drives the same
+  parameters from scripts.
 - **CSS gotcha**: author `display:` values (e.g. `#legend { display:flex }`)
   override the UA `[hidden] { display:none }`; `css/style.css` carries a global
   `[hidden] { display:none !important }` guard — keep it when adding panels.

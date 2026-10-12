@@ -61,12 +61,14 @@ Then:
 
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
 - **click a package** — pin the selection: animated exploded view (children
-  spread and lift, relation pins drop as dashed leaders to their landing
-  pads), its nets glow on the copper with their labels, and occluding
-  packages fade to 30% so every traced connection stays visible end to end
-  (board copper *and* the through-chip via drops); notes of the package and
-  of its net neighbors appear. **Click empty space** to deselect and revert
-  everything.
+  spread and lift; each package carries its own piece of the through-chip
+  via, and dotted leaders bridge the temporary disconnects), its nets
+  glow on the copper with their labels, and occluding packages fade to 30%
+  so every connection stays visible end to end — board copper *and* the
+  through-chip columns, which pierce the housings (the selected container
+  itself becomes translucent when its subtree's columns run through it).
+  Notes of the package and of its net neighbors appear. **Click empty
+  space** to deselect and revert everything.
 - **hover a package** — tooltip only (the scene never changes under the cursor)
 - face labels appear progressively with zoom level (LOD); net labels and
   notes are hidden entirely until a package is selected
@@ -130,6 +132,8 @@ js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       occluder ghosting, ~30 fps cap + idle skip, hit testing
 js/occlude.js         pure board-level occlusion math (package board shadows
                       vs copper paths and TSV drops, world space; tested)
+js/tsv.js             pure TSV geometry: per-package column pieces, radii
+                      and core-nub spec (tested)
 js/main.js            catalog loading, HUD wiring, debug hooks
 diagrams/             your .puml files + generated index.json + *.routes.json
 samples/              reference diagrams (stock PlantUML comparison)
@@ -140,7 +144,7 @@ tools/lib/boardgeo.mjs  pure board geometry + Specctra .ses parsing (tested)
 tools/kicad_route.py    builds the KiCad board, exports DSN, runs Freerouting
 tools/vendor/           freerouting.jar (not committed)
 test/                 Node built-in test-runner suites (parser, layout, sort,
-                      occlusion, pcb routing geometry)
+                      occlusion, tsv geometry, pcb routing geometry)
 ```
 
 Parser and layout are pure modules (no DOM), unit-tested with `node --test`:
@@ -162,7 +166,13 @@ npm test          # or: node --test test/
   and the remaining pins spread over the free slots. Routed nets become
   copper on the 2-layer board (see the routing pipeline above); stacked
   blocks connect through a **through-chip via (TSV)** down to their landing
-  pad on the base layer.
+  pad on the base layer — drawn as per-package cel-shaded pieces (Cu signal
+  core inside a dielectric liner, `js/tsv.js` holds the geometry): every
+  housing owns its body's segment plus the gap up to the next package, and
+  at rest the pieces tile into one column from the pad to the die's bottom.
+  On explosion each piece moves with its own package, and dotted leaders
+  bridge the temporary gaps between disconnected ends — the topmost leader
+  runs from the die's pin.
 - Painter order is `(z0, x+y diagonal)`; elements of one diagram always lay
   out identically (deterministic, snapshot-tested).
 
@@ -192,7 +202,11 @@ node tools/screenshot.mjs http://localhost:8000/ out.png \
 ```
 
 Debug hooks on `window.__view` (used by headless screenshots; harmless
-otherwise): `hover(id)`, `select(id)`, `fit()`, `zoom(f)`, read-only `scale`,
+otherwise): `hover(id)`, `select(id)`, `fit()`, `zoom(f)`, `focus(id)`
+(center + zoom on one package — deterministic framing for shots),
+`tsv(params)` / read-only `tsvParams` (TSV parameter overrides; the hidden
+"TSV lab" slider panel — kept for future experiments — reappears with
+`?tsvlab=1` on diagrams that stack packages), read-only `scale`,
 `drawMs` (smoothed draw cost), `draws` (frames actually painted — with the
 idle skip this stays flat while the page sits still) and `state()` (snapshot
 of per-package ghost/explode targets and the current focus set).

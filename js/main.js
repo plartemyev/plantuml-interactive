@@ -9,6 +9,7 @@ import { parsePlantUml } from './parser.js';
 import { buildScene } from './layout.js';
 import { createRenderer, PALETTE } from './render.js';
 import { naturalSort } from './natsort.js';
+import { TSV_DEFAULTS } from './tsv.js';
 
 const canvas = document.getElementById('scene');
 const els = {
@@ -18,6 +19,7 @@ const els = {
   legend: document.getElementById('legend'),
   list: document.getElementById('diagram-list'),
   items: document.getElementById('diagram-items'),
+  tsvlab: document.getElementById('tsvlab'),
   warnings: document.getElementById('warnings'),
   warnToggle: document.getElementById('warnings-toggle'),
   warnItems: document.getElementById('warning-items'),
@@ -146,6 +148,7 @@ function updateHud(name, model, scene) {
   els.titlebar.hidden = false;
   buildLegend(scene);
   buildWarnings(model.warnings);
+  updateTsvLab(scene);
 }
 
 function buildLegend(scene) {
@@ -187,6 +190,42 @@ els.warnToggle.addEventListener('click', () => {
   els.warnItems.hidden = !els.warnItems.hidden;
 });
 
+// ---- TSV lab --------------------------------------------------------------
+
+// Sliders -> renderer TSV parameters. Slider ranges live in index.html;
+// initial values (and the output text) come from the module defaults so the
+// two cannot drift apart.
+const TSV_CONTROLS = [
+  ['tsv-core', 'coreR'],
+  ['tsv-liner', 'linerT'],
+];
+
+for (const [inpId, key] of TSV_CONTROLS) {
+  const inp = document.getElementById(inpId);
+  const out = document.getElementById(`${inpId}-v`);
+  const show = () => { out.textContent = Number(inp.value).toFixed(key === 'count' ? 0 : 1); };
+  inp.value = TSV_DEFAULTS[key];
+  show();
+  inp.addEventListener('input', () => {
+    show();
+    renderer.setTsvParams({ [key]: Number(inp.value) });
+  });
+}
+
+// The lab is an experiment tool, hidden from the production page: it only
+// shows with ?tsvlab=1, and only on diagrams that actually stack packages;
+// it parks itself right under the diagram list.
+const TSV_LAB_SHOWN = /(?:^|[?&])tsvlab=1(?:&|$)/.test(location.search);
+
+function updateTsvLab(scene) {
+  const hasStacks = scene.boxes.some((b) => b.parentId);
+  els.tsvlab.hidden = !TSV_LAB_SHOWN || !hasStacks;
+  if (!els.tsvlab.hidden) {
+    const top = els.list.hidden ? 14 : els.list.offsetTop + els.list.offsetHeight + 10;
+    els.tsvlab.style.top = `${top}px`;
+  }
+}
+
 const tooltipState = { id: null };
 
 function showTooltip(payload) {
@@ -223,6 +262,9 @@ window.__view = {
   select: (id) => renderer.debugSelect(id),
   fit: () => renderer.fit(),
   zoom: (f) => renderer.zoom(f),
+  tsv: (p) => renderer.setTsvParams(p),
+  get tsvParams() { return renderer.tsvParams; },
+  focus: (id) => renderer.focus(id),
   get scale() { return renderer.scale; },
   get drawMs() { return renderer.drawMs; },
   get draws() { return renderer.draws; },

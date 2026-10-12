@@ -155,6 +155,39 @@ html, body {
   color: var(--accent);
 }
 
+/* tsv lab: parameterized playground for the through-chip via rendering;
+   sits under the diagram list (top set from main.js so they never overlap) */
+#tsvlab {
+  right: 14px;
+  top: 14px;
+  min-width: 176px;
+}
+
+#tsvlab .tsv-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+#tsvlab .tsv-row:first-of-type { margin-top: 0; }
+
+#tsvlab output {
+  margin-left: auto;
+  color: var(--text);
+}
+
+#tsvlab input[type='range'] {
+  flex-basis: 100%;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 /* warnings */
 #warnings {
   top: auto;

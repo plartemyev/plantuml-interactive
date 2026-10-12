@@ -19,6 +19,7 @@
 
 import { M, PIN_NORMALS, pinWorld } from './layout.js';
 import { findOccluders } from './occlude.js';
+import { TSV_DEFAULTS, tsvPieces, tsvSpec } from './tsv.js';
 
 // Kind → base color (top face derives from this; sides darken).
 export const PALETTE = {
@@ -54,6 +55,17 @@ const COPPER_DIM = 'rgba(206, 141, 79, 0.26)';
 const COPPER_DIM_B = 'rgba(206, 141, 79, 0.15)';
 const COPPER_MASK = 'rgba(6, 8, 10, 0.9)';
 const VIA_HOLE = '#0a0e13';
+// TSV bodies: cel-shaded Cu signal core in copper tones inside a dielectric
+// liner sleeve in the accent teal family; hi (traced/lifted) glows accent.
+const TSV_CORE_L = '#d69a52';
+const TSV_CORE_TOP = '#eeb36b'; // fully lit top face of the Cu core
+const TSV_CORE_D = '#96602f';
+const TSV_LINER_L = '#2f9d87';
+const TSV_LINER_D = '#1e6a5b';
+const TSV_LINER_L_HI = '#53e3c2';
+const TSV_LINER_D_HI = '#2a9a85';
+const SQRT2 = Math.sqrt(2); // world circle radius -> projected ellipse semi-x
+const ZERO_OFF = { dx: 0, dy: 0, lift: 0 }; // the board (pads never move)
 
 const STUB = 14;        // wire stub length leaving a package pin
 const SPREAD = 42;      // in-plane explode distance for children
@@ -111,6 +123,7 @@ export function createRenderer(canvas, hooks = {}) {
   let dashOffset = 0;
   let drawMs = 0; // smoothed draw() cost, for the debug hook
   let draws = 0;  // frames actually painted, for the debug hook
+  let tsvParams = { ...TSV_DEFAULTS }; // TSV lab (playground) parameters
 
   // ---- dynamic state -----------------------------------------------------
 
@@ -192,15 +205,16 @@ export function createRenderer(canvas, hooks = {}) {
         const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
         if (!rv) continue;
         paths.push(rv.raw.path);
-        // TSV drops are part of the connection: a drop point at height z'
-        // projects to the board point pad - (z', z'), so the drop is hidden
-        // exactly where that diagonal segment crosses a package's board
+        // TSV columns are per-package pieces; assembled, they span the pad
+        // up to the die's REST bottom face (z0). A column point at height
+        // z' projects to the board point pad - (z', z'), so the column is
+        // hidden exactly where that diagonal crosses a package's board
         // shadow — test it with the same occlusion machinery.
         for (const end of rv.raw.ends) {
           if (!end.stacked) continue;
           const b = scene.byId.get(end.box);
           if (!b) continue;
-          const zTop = (b.z0 + b.z1) / 2 + LIFT_CHILD;
+          const zTop = b.z0;
           paths.push([
             [end.land[0], end.land[1]],
             [end.land[0] - zTop, end.land[1] - zTop],
@@ -208,6 +222,31 @@ export function createRenderer(canvas, hooks = {}) {
         }
       }
       for (const oid of findOccluders(scene.boxes, paths, id)) {
+        stateOf(oid).tghost = OCCLUDE_ALPHA;
+      }
+      // The selected subtree's columns must read through their housings
+      // even when the selected element itself has no traced nets: ghost
+      // every package covering those columns — the selected container
+      // itself included (translucent-housing exploded view) — but not the
+      // lifting descendants, which fly away from their own columns.
+      const stack = subtreeBoxes(id);
+      const colPaths = [];
+      for (const e of scene.edges) {
+        const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
+        if (!rv) continue;
+        for (const end of rv.raw.ends) {
+          if (!end.stacked || end.box === id || !stack.has(end.box)) continue;
+          const b = scene.byId.get(end.box);
+          if (!b) continue;
+          const zTop = b.z0;
+          colPaths.push([
+            [end.land[0], end.land[1]],
+            [end.land[0] - zTop, end.land[1] - zTop],
+          ]);
+        }
+      }
+      for (const oid of findOccluders(scene.boxes, colPaths, null)) {
+        if (oid !== id && stack.has(oid)) continue;
         stateOf(oid).tghost = OCCLUDE_ALPHA;
       }
     }
@@ -229,6 +268,16 @@ export function createRenderer(canvas, hooks = {}) {
       });
     }
     return eff;
+  }
+
+  // Root id -> {root} ∪ descendants. scene.boxes is painter-ordered
+  // (parents before children), so one pass closes the set.
+  function subtreeBoxes(rootId) {
+    const set = new Set([rootId]);
+    for (const b of scene.boxes) {
+      if (b.parentId && set.has(b.parentId)) set.add(b.id);
+    }
+    return set;
   }
 
   // ---- projection --------------------------------------------------------
@@ -643,24 +692,17 @@ export function createRenderer(canvas, hooks = {}) {
       const end = r.ends[k];
       const b = scene.byId.get(end.box);
       if (!b) continue;
-      const eEff = eff.get(end.box);
-      const o = boxOrigin(b, eEff);
-      const pw = pinWorld(b, o, k === 0 ? e.fromPin : e.toPin);
-      const top = project(pw.x, pw.y, pw.z);
-      const bot = project(end.land[0], end.land[1], 0.3);
+      const pin = k === 0 ? e.fromPin : e.toPin;
       if (end.stacked) {
-        const pEff = b.parentId ? eff.get(b.parentId) : null;
-        const lifted = eEff.lift > 2 || (pEff && pEff.lift > 2);
-        ctx.save();
-        ctx.strokeStyle = lifted || isFocus ? 'rgba(83, 227, 194, 0.85)' : 'rgba(10, 14, 18, 0.9)';
-        ctx.lineWidth = (lifted ? 1.6 : 2.6) / cam.scale;
-        if (lifted) ctx.setLineDash([5 / cam.scale, 4 / cam.scale]);
-        ctx.beginPath();
-        ctx.moveTo(top.x, top.y);
-        ctx.lineTo(bot.x, bot.y);
-        ctx.stroke();
-        ctx.restore();
+        // Per-package column pieces: each moves with its owner, dotted
+        // leaders bridge the gaps that explosions open up.
+        drawTsvDrop(b, pin, end.land, eff, isFocus);
       } else {
+        const eEff = eff.get(end.box);
+        const o = boxOrigin(b, eEff);
+        const pw = pinWorld(b, o, pin);
+        const top = project(pw.x, pw.y, pw.z);
+        const bot = project(end.land[0], end.land[1], 0.3);
         ctx.strokeStyle = isFocus ? (e.color ?? ACCENT) : COPPER;
         ctx.lineWidth = 1.4 / cam.scale;
         ctx.beginPath();
@@ -673,6 +715,120 @@ export function createRenderer(canvas, hooks = {}) {
         ctx.fill();
       }
     }
+  }
+
+  // Per-package through-chip via (TSV). The connection from a stacked die
+  // to its landing pad is one column at rest, drawn as pieces — one per
+  // housing package down the chain — and each piece moves with its owner
+  // (is explodable). Wherever neighbouring pieces separate, or the die's
+  // pin separates from the top piece, a dotted leader bridges the gap.
+  function drawTsvDrop(b, pin, land, eff, hi) {
+    const spec = tsvSpec(tsvParams);
+    const aL = spec.linerR * SQRT2;
+    const aC = spec.coreR * SQRT2;
+    const liner = hi ? [TSV_LINER_L_HI, TSV_LINER_D_HI] : [TSV_LINER_L, TSV_LINER_D];
+    // landing annulus flat on the board + dark plated opening under the foot
+    const pad = project(land[0], land[1], spec.zBase);
+    ellipseFill(pad, spec.padR * SQRT2, COPPER, hi ? ACCENT : COPPER_MASK);
+    ellipseFill(pad, (spec.linerR + 0.4) * SQRT2, VIA_HOLE, null);
+    // ancestor chain, parent -> root (statically bounded walk)
+    const chain = [];
+    for (let cur = b, i = 0; cur.parentId && i < scene.boxes.length; i++) {
+      cur = scene.byId.get(cur.parentId);
+      if (!cur) break;
+      chain.push(cur);
+    }
+    const pieces = tsvPieces(b, chain, spec.zBase);
+    // pieces bottom-up: liner sleeve + core nub per piece; the nub of one
+    // is absorbed by the piece above while the column stays assembled
+    const info = [];
+    for (const piece of pieces) {
+      const o = eff.get(piece.id);
+      const at = (z) => project(land[0] + o.dx, land[1] + o.dy, z + o.lift);
+      const bot = at(piece.z0);
+      const top = at(piece.z1);
+      barrelBody(top, bot, aL, liner[0], liner[1]);
+      ellipseRim(top, aL);                    // liner mouth
+      const coreTop = at(piece.z1 + spec.nub);
+      barrelBody(coreTop, bot, aC, TSV_CORE_L, TSV_CORE_D);
+      ellipseFill(coreTop, aC, TSV_CORE_TOP, null); // fully lit top face
+      ellipseRim(coreTop, aC);                // Cu core nub over the mouth
+      info.push({ o, top, bot });
+    }
+    // dotted leaders across temporary disconnections, walking top-down:
+    // die pin -> top piece, piece boundaries, root piece -> pad
+    const dieO = eff.get(b.id);
+    const pinW = pinWorld(b, boxOrigin(b, dieO), pin);
+    let upper = { o: dieO, p: project(pinW.x, pinW.y, pinW.z) };
+    for (let i = info.length - 1; i >= 0; i--) {
+      const d = info[i];
+      if (separated(upper.o, d.o)) drawDots(upper.p, d.top);
+      upper = { o: d.o, p: d.bot };
+    }
+    if (separated(upper.o, ZERO_OFF)) drawDots(upper.p, pad);
+  }
+
+  // True when the two owners no longer share a position (epsilon absorbs
+  // the tail of the ease animation, which never lands exactly).
+  function separated(a, c) {
+    return Math.abs(a.dx - c.dx) + Math.abs(a.dy - c.dy) + Math.abs(a.lift - c.lift) > 0.25;
+  }
+
+  // Dotted leader between two temporarily disconnected ends of a TSV
+  // connection (accent tint — the explode/disconnect language).
+  function drawDots(a, b) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(83, 227, 194, 0.85)';
+    ctx.lineWidth = 1.3 / cam.scale;
+    ctx.setLineDash([0.1 / cam.scale, 3.6 / cam.scale]); // round caps -> dots
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Flat horizontal disc: 2:1 ellipse (semi-x a) at projected point p.
+  function ellipseFill(p, a, fill, stroke) {
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, a, a / 2, 0, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 0.8 / cam.scale;
+      ctx.stroke();
+    }
+  }
+
+  function ellipseRim(p, a) {
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, a, a / 2, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 0.9 / cam.scale;
+    ctx.stroke();
+  }
+
+  // Cel-shaded cylinder silhouette between the projected top/bottom ellipse
+  // centres (semi-x a): dark fill, light left half via clip, crisp outline.
+  // Tolerates tilt (explode) — the terminator stays vertical, like the boxes.
+  function barrelBody(top, bot, a, light, dark) {
+    const b = a / 2;
+    ctx.beginPath();
+    ctx.ellipse(top.x, top.y, a, b, 0, Math.PI, 0); // upper half, left -> right
+    ctx.lineTo(bot.x + a, bot.y);
+    ctx.ellipse(bot.x, bot.y, a, b, 0, 0, Math.PI); // lower half, right -> left
+    ctx.closePath();
+    ctx.fillStyle = dark;
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = light;
+    ctx.fillRect((top.x + bot.x) / 2 - 1e4, top.y - 1e4, 1e4, 2e4);
+    ctx.restore();
+    ctx.strokeStyle = OUTLINE;
+    ctx.lineWidth = 0.9 / cam.scale;
+    ctx.stroke();
   }
 
   // Arrow head flat on the board plane (points are already projected).
@@ -1112,6 +1268,22 @@ export function createRenderer(canvas, hooks = {}) {
     },
     fit,
     zoom(f) { zoomAt(W / 2, H / 2, f); },
+    // Debug/scripted screenshots: center (and roughly zoom to) one package.
+    focus(id) {
+      const b = scene?.byId.get(id);
+      if (!b) return;
+      cam.scale = Math.max(0.4, Math.min(6, Math.min(W, H) / (Math.max(b.w, b.d) * 2.5)));
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.d / 2;
+      cam.sx = isoX(cx, cy);
+      cam.sy = isoY(cx, cy, 0); // pad level: die sits up-screen, barrels below
+      needsDraw = true;
+    },
+    setTsvParams(p) { // partial update from the TSV lab panel / debug hook
+      tsvParams = { ...tsvParams, ...p };
+      needsDraw = true;
+    },
+    get tsvParams() { return { ...tsvParams }; },
     get scale() { return cam.scale; },
     get drawMs() { return drawMs; },
     get draws() { return draws; },
