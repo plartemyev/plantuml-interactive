@@ -63,13 +63,17 @@ Then:
 - **click a package** — pin the selection: animated exploded view (children
   spread and lift; each package carries its own piece of the through-chip
   via, and dotted leaders bridge the temporary disconnects), its nets
-  glow on the copper with their labels, and occluding packages fade to 30%
-  so every connection stays visible end to end — board copper *and* the
-  through-chip columns, which pierce the housings (the selected container
-  itself becomes translucent when its subtree's columns run through it).
-  Notes of the package and of its net neighbors appear. **Click empty
-  space** to deselect and revert everything.
-- **hover a package** — tooltip only (the scene never changes under the cursor)
+  glow on the copper with their labels, the package and its net peers get
+  their dark edges cased in accent color (kept crisp even on packages
+  faded to reveal the copper beneath them), and occluding packages fade
+  to 30% so every connection stays visible end to end — board copper
+  *and* the through-chip columns, which pierce the housings (the selected
+  container itself becomes translucent when its subtree's columns run
+  through it). Notes of the package and of its net neighbors appear.
+  **Click the selected package again, or empty space**, to deselect and
+  revert everything.
+- **hover a package** — tooltip plus a light outline on the package's
+  geometry edges (faces never change under the cursor)
 - face labels appear progressively with zoom level (LOD); net labels and
   notes are hidden entirely until a package is selected
 - rendering is capped at ~30 fps and skips redraws entirely while idle
@@ -128,8 +132,9 @@ js/layout.js          deterministic containment-tree layout:
                       first), painter order
 js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       packages, base-layer copper tracks + vias (routes.json),
-                      pin leads, LOD tiers, selection explode + net tracing,
-                      occluder ghosting, ~30 fps cap + idle skip, hit testing
+                      pin leads, LOD tiers, hover/selection edge highlights,
+                      selection explode + net tracing, occluder ghosting,
+                      ~30 fps cap + idle skip, hit testing
 js/occlude.js         pure board-level occlusion math (package board shadows
                       vs copper paths and TSV drops, world space; tested)
 js/tsv.js             pure TSV geometry: per-package column pieces, radii
@@ -184,8 +189,9 @@ npm test          # or: node --test test/
   resting positions — a package that stops (or starts) covering a trace only
   because of the explode animation itself is not re-evaluated until the next
   selection.
-- Copper routed on the underside (B.Cu) is drawn translucent; it is not
-  z-occluded by the board, only styled dimmer.
+- Copper routed on the underside (B.Cu) is drawn in the autorouter's blue
+  at constant visibility; it is not z-occluded by the board, only layered
+  under the packages that sit on top of it.
 - Edge labels show their first line at route midpoint, only for the traced
   nets of the selected package.
 - No minimap, no search, no editing — read-only visualization by design.

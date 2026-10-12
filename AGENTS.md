@@ -277,6 +277,9 @@ second-nature and not using them becomes unimaginable.
   pointermove for tooltip testing). Chromium needs `--no-sandbox` here.
   The eval expression runs with `awaitPromise: true` — an async IIFE can
   chain diagram switch (click the `#diagram-items` button) + `__view.select()`.
+  Give the switch a real settle delay (~1.5s) before selecting: the eval can
+  race `loadDiagram`'s fetch, and `__view.select(id)` then lands on the
+  previous scene (silent — `__selected` sets, `__focus` stays empty).
   Frame a target with `window.__view.focus(id)`; wheel-zoom to hardcoded
   screen coordinates is NOT reproducible across runs (the fit() scale after a
   diagram switch depends on the scene), synthetic `WheelEvent`s on the canvas

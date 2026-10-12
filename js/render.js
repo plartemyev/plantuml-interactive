@@ -7,10 +7,12 @@
 // - 2:1 dimetric projection, cel-shaded boxes (flat top/left/right shades)
 // - nesting rendered as package-on-package stacking with corner TSV vias
 // - click: pin a package — animated exploded view (children spread + lift,
-//   leaves pop up), its nets glow on the copper, occluding packages ghost
-//   to 30% so every trace stays visible; notes of the package and of its
-//   net neighbors appear. Nothing is shown until a click selects a package.
-// - hover: tooltip only
+//   leaves pop up), its nets glow on the copper, the package and its net
+//   peers get accent outlines, occluding packages ghost to 30% so every
+//   trace stays visible; notes of the package and of its net neighbors
+//   appear. Nothing is shown until a click selects a package; a second
+//   click on the selected package (or on empty space) reverts everything.
+// - hover: tooltip + light outline on the package's geometry edges
 // - wheel: zoom
 // - level-of-detail: labels/notes/edge labels appear by zoom tier
 // - frame pacing: ~30 fps cap, and no redraws at all while idle
@@ -47,12 +49,15 @@ const TEXT_ON_FACE = 'rgba(7, 12, 16, 0.92)';
 const SILKSCREEN = 'rgba(214, 226, 235, 0.85)';
 const EDGE_DIM = '126, 143, 166';
 const ACCENT = '#53e3c2';
-// PCB copper: a dark solder-mask outline under a copper core. B.Cu is the
-// board underside — same hue, dimmer, so layer changes read as such.
-const COPPER = 'rgba(206, 141, 79, 0.62)';
-const COPPER_B = 'rgba(206, 141, 79, 0.30)';
-const COPPER_DIM = 'rgba(206, 141, 79, 0.26)';
-const COPPER_DIM_B = 'rgba(206, 141, 79, 0.15)';
+const HOVER_EDGE = 'rgba(158, 203, 255, 0.95)';
+const PEER_EDGE = 'rgba(83, 227, 230, 0.95)';
+const HIGHLIGHT_EDGE_W = 4.6; // casing width around the 1.2 dark core
+// PCB copper: a dark solder-mask outline under a copper core. Traces are
+// opaque and their visibility is constant — selection, ghosting and any
+// other transient state never change it. B.Cu is the board underside, in
+// the autorouter's blue so layer changes read clearly.
+const COPPER = 'rgba(228, 158, 84, 0.95)';    // F.Cu — bright copper
+const COPPER_B = 'rgba(96, 156, 232, 0.92)';  // B.Cu — blue underside
 const COPPER_MASK = 'rgba(6, 8, 10, 0.9)';
 const VIA_HOLE = '#0a0e13';
 // TSV bodies: cel-shaded Cu signal core in copper tones inside a dielectric
@@ -114,6 +119,7 @@ export function createRenderer(canvas, hooks = {}) {
   let dragging = null; // {startX, startY, camSX, camSY, moved}
   let focusEdges = new Set(); // edges of the selected element, per selection
   let focusNets = new Set();  // selected element + direct net neighbors
+  let focusPeers = new Set(); // packages highlighted by the selection
   let needsDraw = true;       // redraw only when something changed
   let routeView = new Map();  // edge index -> {raw, pts, runs, viaPts, midPt}
   let glyphFit = 1; // uniform kind-glyph scale, computed once per scene load
@@ -195,13 +201,21 @@ export function createRenderer(canvas, hooks = {}) {
     retarget();
     focusEdges = edgeFocusSet();
     focusNets = new Set();
+    focusPeers = new Set();
     for (const s of anim.values()) s.tghost = 1;
     if (id && scene) {
       focusNets.add(id);
+      focusPeers.add(id);
       const paths = [];
       for (const e of focusEdges) {
         focusNets.add(e.fromId);
         focusNets.add(e.toId);
+        // hidden edges are never drawn or routed, so they connect nothing
+        // visible and must not highlight a peer
+        if (!e.hidden && !e.self) {
+          focusPeers.add(e.fromId);
+          focusPeers.add(e.toId);
+        }
         const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
         if (!rv) continue;
         paths.push(rv.raw.path);
@@ -411,6 +425,16 @@ export function createRenderer(canvas, hooks = {}) {
     ctx.stroke();
   }
 
+  // Geometry-edge highlight color for selected/peer/hovered packages, null
+  // for the plain cel outline. Selection outranks hover, so an
+  // already-highlighted box never flickers between the two.
+  function edgeHighlight(b) {
+    if (b.id === selectedId) return ACCENT;
+    if (focusPeers.has(b.id)) return PEER_EDGE;
+    if (b.id === hoverId) return HOVER_EDGE;
+    return null;
+  }
+
   function drawBox(b, o, eff) {
     const pal = paletteFor(b.kind);
     const A = project(o.x, o.y, o.z1);
@@ -428,10 +452,32 @@ export function createRenderer(canvas, hooks = {}) {
     fillPoly([D0, C0, C, D], shade(pal.base, 0.02));
     fillPoly([B0, C0, C, B], shade(pal.base, -0.16));
     fillPoly([A, B, C, D], shade(pal.base, 0.16));
-    // crisp cel outline: top rim, front bottom edges, visible verticals
-    strokePoly([A, B, C, D], OUTLINE, 1.2 / cam.scale);
-    strokePoly([B0, C0, D0], OUTLINE, 1.2 / cam.scale);
-    strokePoly([C, C0], OUTLINE, 1.2 / cam.scale);
+    // Crisp cel outline over the full visible silhouette: closed top rim
+    // (the box hides its underside, so only the front bottom edges show),
+    // the front vertical where the two visible faces meet, and the
+    // left/right silhouette verticals; the back vertical A-A0 stays hidden.
+    // Highlighted packages (selected, net peers, hover) case that outline
+    // in their highlight color — a colored halo under the same dark edge —
+    // and the casing rides above the ghost fade, so a package faded to
+    // reveal the copper beneath it keeps a readable outline.
+    const rim = [
+      [A, B, C, D, A], // top rim, all four edges
+      [B0, C0, D0],    // front bottom edges
+      [C, C0],         // front vertical
+      [B, B0],         // right silhouette vertical
+      [D, D0],         // left silhouette vertical
+    ];
+    const edge = edgeHighlight(b);
+    const w = 1.2 / cam.scale;
+    ctx.globalAlpha = edge ? 1 : ghost;
+    for (const pts of rim) {
+      strokePoly(pts, edge ?? OUTLINE, edge ? HIGHLIGHT_EDGE_W / cam.scale : w);
+    }
+    if (edge) {
+      ctx.globalAlpha = 1; // the dark core never fades with the body either
+      for (const pts of rim) strokePoly(pts, OUTLINE, w);
+    }
+    ctx.globalAlpha = ghost;
     drawFaceDetails(b, o, A, B, D);
     recordHull(b, [A, B, C, D, C0, D0, A0, B0]);
     ctx.globalAlpha = 1;
@@ -578,13 +624,13 @@ export function createRenderer(canvas, hooks = {}) {
 
   // Traces routed by Freerouting live on the board surface, so they are
   // painted right after the board and before the packages (which occlude
-  // them, like real copper running under a component body). B.Cu hops are
-  // drawn dimmer — the underside of the board.
+  // them, like real copper running under a component body). Copper draws
+  // at constant visibility: only the selected package's nets switch to the
+  // glowing accent style, everything else keeps its ordinary look.
   function drawRoutes(eff, view) {
     if (routeView.size === 0) return;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    const focusActive = focusEdges.size > 0;
     const traceW = (scene.routes.traceW ?? 2) / cam.scale;
     for (const [idx, rv] of routeView) {
       const bd = rv.bounds;
@@ -594,8 +640,6 @@ export function createRenderer(canvas, hooks = {}) {
       const e = scene.edges[idx];
       const isFocus = focusEdges.has(e);
       const pts = rv.pts;
-      // traced nets stay at full alpha even when an endpoint is ghosted
-      ctx.globalAlpha = isFocus ? 1 : ghostAlpha(e);
       // mask pass: one dark outline under the whole route
       strokePath(pts, COPPER_MASK, traceW + 2.4 / cam.scale);
       if (isFocus) {
@@ -605,18 +649,15 @@ export function createRenderer(canvas, hooks = {}) {
         ctx.setLineDash([]);
       } else {
         for (const run of rv.runs) {
-          strokePath(run.pts, focusActive
-            ? (run.layer === 0 ? COPPER_DIM : COPPER_DIM_B)
-            : (run.layer === 0 ? COPPER : COPPER_B), traceW);
+          strokePath(run.pts, run.layer === 0 ? COPPER : COPPER_B, traceW);
         }
       }
       drawRouteVias(rv);
       drawRoutePads(pts);
       drawRouteEnds(e, rv.raw, eff, isFocus);
-      const lineColor = isFocus ? (e.color ?? ACCENT) : focusActive ? COPPER_DIM : COPPER;
+      const lineColor = isFocus ? (e.color ?? ACCENT) : COPPER;
       if (e.arrow || e.bidir) drawFlatArrow(pts[pts.length - 2], pts[pts.length - 1], lineColor);
       if (e.bidir) drawFlatArrow(pts[1], pts[0], lineColor);
-      ctx.globalAlpha = 1;
     }
   }
 
@@ -1173,6 +1214,7 @@ export function createRenderer(canvas, hooks = {}) {
     const id = hitTest(px, py);
     if (id !== hoverId) {
       hoverId = id;
+      needsDraw = true; // the hover edge highlight lives on the canvas
       if (hooks.onHover) {
         hooks.onHover(hoverPayload(px, py));
       }
@@ -1222,7 +1264,9 @@ export function createRenderer(canvas, hooks = {}) {
 
   canvas.addEventListener('pointerup', (ev) => {
     if (dragging && !dragging.moved) {
-      applySelection(dragging.hitId); // click on empty space deselects
+      // clicking the selected package again deselects it, as does a click
+      // on empty space
+      applySelection(dragging.hitId === selectedId ? null : dragging.hitId);
       if (hooks.onHover) hooks.onHover(hoverPayload(pointer.x, pointer.y));
     }
     dragging = null;
@@ -1231,6 +1275,7 @@ export function createRenderer(canvas, hooks = {}) {
   canvas.addEventListener('pointerleave', () => {
     if (hoverId) {
       hoverId = null;
+      needsDraw = true;
       if (hooks.onHover) hooks.onHover(null);
     }
   });
@@ -1289,6 +1334,7 @@ export function createRenderer(canvas, hooks = {}) {
     get draws() { return draws; },
     debugHover(id) {
       hoverId = id;
+      needsDraw = true;
     },
     debugSelect(id) {
       applySelection(id);
