@@ -5,15 +5,17 @@
 
 """Routes a board spec through KiCad + Freerouting.
 
-Usage: kicad_route.py SPEC_JSON SES_OUT [ROUTED_PCB_OUT]
+Usage: kicad_route.py SPEC_JSON SES_OUT [--single-layer]
 
 Reads a board spec (see tools/lib/boardgeo.mjs buildBoardSpec), builds a
 KiCad board in memory, exports Specctra DSN, runs the Freerouting autorouter
 headlessly, and copies the resulting .ses session to SES_OUT.
 
-The board is a 2-layer PCB: every package keepout is mirrored onto F.Cu and
-B.Cu, so copper routes around the packages on both layers and the router can
-hop between layers (board vias) to resolve crossings.
+With --single-layer, a board-wide keepout blocks B.Cu (tracks and vias), so
+the router may only use F.Cu. The via padstack stays in the DSN: a board
+without one crashes Freerouting (see tooling notes). The caller uses this for
+a first F.Cu-only pass and re-runs without the flag when it comes back
+unroutable.
 
 Requires: python3 with the pcbnew module (kicad package), java >= 25 and the
 Freerouting jar (tools/vendor/freerouting.jar or $FREEROUTING_JAR).
@@ -88,7 +90,7 @@ def glob_dirs(base, pattern):
     return [os.path.join(base, n) for n in sorted(names) if fnmatch.fnmatch(n, pattern)]
 
 
-def build_board(spec, board_path):
+def build_board(spec, board_path, single_layer):
     keep = []
     add = keepall(keep)
     nm = int(spec["scaleNm"])
@@ -134,26 +136,37 @@ def build_board(spec, board_path):
             fp.Add(pad)
             add(pad)
 
-    def keepout(x0, y0, x1, y1, layer):
-        zone = pcbnew.ZONE(board)
-        zone.SetIsRuleArea(True)
-        zone.SetDoNotAllowTracks(True)
-        zone.SetDoNotAllowVias(True)
-        zone.SetLayer(layer)
+    def zone(points, layer, tracks_only):
+        z = pcbnew.ZONE(board)
+        z.SetIsRuleArea(True)
+        z.SetDoNotAllowTracks(True)
+        if not tracks_only:
+            z.SetDoNotAllowVias(True)
+        z.SetLayer(layer)
         pol = pcbnew.SHAPE_POLY_SET()
         pol.NewOutline()
-        for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+        for x, y in points:
             v = V(x, y)
             pol.Append(v.x, v.y)
-        zone.SetOutline(pol)
-        board.Add(zone)
-        add(zone, pol)
+        z.SetOutline(pol)
+        board.Add(z)
+        add(z, pol)
 
-    # package keepouts exist on both copper layers: copper must route around
-    # packages on either layer; the router hops F.Cu <-> B.Cu via board vias
-    for x0, y0, x1, y1 in spec["keepouts"]:
-        keepout(x0, y0, x1, y1, pcbnew.F_Cu)
-        keepout(x0, y0, x1, y1, pcbnew.B_Cu)
+    def keepout(x0, y0, x1, y1, layer):
+        zone(((x0, y0), (x1, y0), (x1, y1), (x0, y1)), layer, tracks_only=False)
+
+    # TSV column shadow blocks behind stacked landing pads (see
+    # boardgeo.mjs): tracks only — the final hop to the SMD pad is always
+    # F.Cu, so vias stay legal. Both copper layers: a B.Cu trace hiding
+    # behind a column reads exactly the same as an F.Cu one.
+    for poly in spec.get("noTrackZones", []):
+        zone(poly, pcbnew.F_Cu, tracks_only=True)
+        zone(poly, pcbnew.B_Cu, tracks_only=True)
+
+    if single_layer:
+        # F.Cu-only pass: block B.Cu board-wide for tracks and vias. The
+        # router keeps the via padstack but can never leave F.Cu.
+        keepout(0, 0, spec["board"]["w"], spec["board"]["d"], pcbnew.B_Cu)
     return board, keep
 
 
@@ -178,15 +191,18 @@ def run_freerouting(dsn_path, ses_path):
 
 
 def main():
-    if len(sys.argv) < 3:
+    args = sys.argv[1:]
+    single_layer = "--single-layer" in args
+    args = [a for a in args if a != "--single-layer"]
+    if len(args) < 2:
         raise SystemExit(__doc__)
-    spec_path, ses_out = sys.argv[1], sys.argv[2]
+    spec_path, ses_out = args[0], args[1]
     with open(spec_path) as f:
         spec = json.load(f)
 
     with tempfile.TemporaryDirectory(prefix="puml-pcb-") as tmp:
         board_path = os.path.join(tmp, "board.kicad_pcb")
-        board, keep = build_board(spec, board_path)
+        board, keep = build_board(spec, board_path, single_layer)
         dsn_path = os.path.join(tmp, "board.dsn")
         export_dsn(board, keep, dsn_path)
         shutil.copyfile(dsn_path, os.path.splitext(ses_out)[0] + ".dsn")

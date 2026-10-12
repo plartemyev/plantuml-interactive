@@ -3,16 +3,17 @@
 // Copyright (C) 2026 Pavel Artemyev <a@pavel.bz>
 
 // Unit tests for the PCB routing geometry (tools/lib/boardgeo.mjs): board
-// spec construction (pads, TSV corridors, keepouts) and Specctra .ses
-// parsing/chaining. Pure modules — no DOM, runs under `node --test`.
+// spec construction (pads) and Specctra .ses parsing/chaining. Pure modules —
+// no DOM, runs under `node --test`.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  buildBoardSpec, subtractRects, sesToWorld, chainSegments,
-  PAD_R, CLEARANCE, CORRIDOR_W,
+  buildBoardSpec, sesToWorld, chainSegments,
+  PAD_R, CLEARANCE,
 } from '../tools/lib/boardgeo.mjs';
+import { TSV_DEFAULTS } from '../js/tsv.js';
 
 // -- fixtures ---------------------------------------------------------------
 
@@ -39,41 +40,6 @@ function fakeScene() {
   };
 }
 
-// -- subtractRects ----------------------------------------------------------
-
-test('subtractRects: corridor crossing fully along x splits into two pieces', () => {
-  const pieces = subtractRects(
-    { x0: 0, y0: 0, x1: 100, y1: 50 },
-    [{ x0: 40, y0: -10, x1: 60, y1: 60 }],
-  );
-  assert.equal(pieces.length, 2);
-  const area = pieces.reduce((a, p) => a + (p.x1 - p.x0) * (p.y1 - p.y0), 0);
-  assert.equal(area, 100 * 50 - 20 * 50);
-});
-
-test('subtractRects: multiple cuts are exact and non-overlapping', () => {
-  const pieces = subtractRects(
-    { x0: 0, y0: 0, x1: 100, y1: 100 },
-    [
-      { x0: 45, y0: -5, x1: 55, y1: 105 },
-      { x0: -5, y0: 20, x1: 105, y1: 30 },
-    ],
-  );
-  const area = pieces.reduce((a, p) => a + (p.x1 - p.x0) * (p.y1 - p.y0), 0);
-  // 10000 - vertical strip (10*100) - horizontal strip (90*10 of the rest)
-  assert.equal(area, 10000 - 1000 - 900);
-});
-
-test('subtractRects: non-crossing cut is trimmed conservatively', () => {
-  // corridor not reaching the edges still removes its intersection
-  const pieces = subtractRects(
-    { x0: 0, y0: 0, x1: 100, y1: 100 },
-    [{ x0: 40, y0: 40, x1: 60, y1: 60 }],
-  );
-  const area = pieces.reduce((a, p) => a + (p.x1 - p.x0) * (p.y1 - p.y0), 0);
-  assert.equal(area, 10000 - 20 * 20);
-});
-
 // -- buildBoardSpec ---------------------------------------------------------
 
 test('buildBoardSpec: every visible non-self relation becomes a two-pad net', () => {
@@ -94,7 +60,7 @@ test('buildBoardSpec: top-level pads sit outside their package outline', () => {
   assert.ok(dist >= PAD_R + CLEARANCE - 1e-9, `pad ${dist} units outside outline`);
 });
 
-test('buildBoardSpec: stacked pad is directly below the die pin and escapes', () => {
+test('buildBoardSpec: stacked pad is directly below the die pin', () => {
   const spec = buildBoardSpec(fakeScene());
   const net = spec.nets[1]; // pkg2 -> die
   const die = { x: 540, y: 190, w: 100, d: 60 };
@@ -102,33 +68,26 @@ test('buildBoardSpec: stacked pad is directly below the die pin and escapes', ()
   // pin face 2 (-x) at t=0.5: pin at (540, 190 + 30) => pad right below it
   assert.equal(pad.x, die.x);
   assert.equal(pad.y, die.y + die.d * 0.5);
-  // the corridor must cut the whole pkg2 outline open along -x from the pad:
-  // no keepout piece may cover the pad or the escape path outside the outline
-  const pkg2 = { x0: 500, y0: 150, x1: 680, y1: 270 };
-  const probe = [
-    [pad.x, pad.y],
-    [pad.x - CORRIDOR_W, pad.y],
-    [pkg2.x0 - PAD_R, pad.y],
-  ];
-  for (const [x, y] of probe) {
-    for (const [kx0, ky0, kx1, ky1] of spec.keepouts) {
-      const inside = x > kx0 && x < kx1 && y > ky0 && y < ky1;
-      assert.ok(!inside, `escape point ${x},${y} must be clear of keepouts`);
-    }
-  }
 });
 
-test('buildBoardSpec: keepouts cover the top-level outlines elsewhere', () => {
+test('buildBoardSpec: stacked pads get a no-track zone covering the column shadow', () => {
   const spec = buildBoardSpec(fakeScene());
-  // pkg1 has no stacked children: it must appear fully as keepout(s)
-  const pkg1Area = 200 * 100;
-  let pkg1Covered = 0;
-  for (const [x0, y0, x1, y1] of spec.keepouts) {
-    if (x0 >= 100 && x1 <= 300 && y0 >= 100 && y1 <= 200) {
-      pkg1Covered += (x1 - x0) * (y1 - y0);
-    }
+  // only the die endpoint is stacked -> exactly one zone, behind its pad
+  assert.equal(spec.noTrackZones.length, 1);
+  const pad = spec.nets[1].pads[1]; // (540, 220); the die sits at z0 = 22
+  const ups = spec.noTrackZones[0].map(([x, y]) => (pad.x + pad.y) - (x + y));
+  // nearest edge past the pad clearance, farthest past the column top: the
+  // shadow of a column of height h spans 2*h of x+y up-screen of the pad
+  assert.ok(Math.min(...ups) > 6, `zone touches the pad: ${Math.min(...ups)}`);
+  assert.ok(Math.max(...ups) >= 2 * (22 - TSV_DEFAULTS.zBase),
+    `zone shorter than the shadow: ${Math.max(...ups)}`);
+  for (const [x, y] of spec.noTrackZones[0]) {
+    // within a slim band around the column axis (isoX = x - y)
+    assert.ok(Math.abs((x - y) - (pad.x - pad.y)) <= 4.3, `corner ${x},${y} off the axis band`);
+    // never inside the pad clearance
+    const dist = Math.hypot(x - pad.x, y - pad.y);
+    assert.ok(dist >= PAD_R + CLEARANCE - 0.1, `corner ${x},${y} inside pad clearance`);
   }
-  assert.equal(pkg1Covered, pkg1Area);
 });
 
 // -- Specctra session -------------------------------------------------------

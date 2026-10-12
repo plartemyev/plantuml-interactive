@@ -5,24 +5,26 @@
 // Pure geometry + formats for the PCB routing pipeline (no DOM, no IO).
 //
 // The board metaphor: the diagram is a two-layer PCB. Every element package
-// sits on (or is PoP-stacked above) the board; its keepout covers the package
-// outline on BOTH copper layers, so copper always routes around packages and
-// never hides beneath them. Relations become nets; every net endpoint becomes
-// a landing pad on the top copper (F.Cu — the visible "base" layer):
+// sits on (or is PoP-stacked above) the board. Relations become nets; every
+// net endpoint becomes a landing pad on the top copper (F.Cu — the visible
+// "base" layer):
 //
 //   - top-level package: pad just outside the package outline (a SMD pad next
 //     to the body); the renderer draws a short lead from the face pin to it.
 //   - stacked package (a die on top of another die): pad directly below the
 //     face pin, at board level. The signal reaches it through a vertical
-//     through-chip via (TSV), so the package's keepout is cut an escape
-//     corridor along the pin's face normal, out of the top-level ancestor's
-//     outline.
+//     through-chip via (TSV).
+//
+// There are no routing keepouts: the autorouter is free to run copper where
+// it likes, including under packages — the renderer's occluder ghosting and
+// trace highlights keep hidden traces readable.
 //
 // The autorouter may hop between F.Cu and B.Cu (board vias): the underside is
 // rendered dimmer by the renderer, and layer changes read as classic PCB
 // vias.
 
 import { PIN_NORMALS, pinWorld } from '../../js/layout.js';
+import { TSV_DEFAULTS } from '../../js/tsv.js';
 
 // Board scale: 1 world unit = 0.1 mm (KiCad side uses scaleNm per unit).
 export const UNIT_MM = 0.1;
@@ -32,68 +34,73 @@ export const TRACE_W = 2;    // copper track width
 export const CLEARANCE = 2;  // copper clearance
 export const PAD_R = 3;      // landing pad radius (0.6 mm pad)
 export const VIA_R = 3;      // via pad radius (0.6 mm / 0.3 mm drill)
-export const CORRIDOR_W = 2 * (PAD_R + CLEARANCE) + 2; // TSV escape corridor
 
-const EDGE_EXIT = PAD_R + CLEARANCE + 2; // how far past the outline corridors run
+// No-track zones covering what each TSV column hides of the board. The
+// projection is orthographic along (1,1,1), so a board point is hidden
+// behind a column exactly when it sits inside the column's screen band
+// (|d(x-y)| <= linerR*sqrt(2)) up-screen of the pad, within the column
+// height: a trace crossing that shadow reads as diving behind the column
+// and plugging into its top. Each shadow becomes rule areas on both copper
+// layers (tracks only; vias stay legal — the final hop to the SMD pad is
+// always F.Cu), starting past the pad clearance so short 45° connection
+// stubs stay legal. Where another landing pad sits inside the shadow, the
+// strip resumes behind it, leaving only a half-band-wide window on that
+// pad's own side: enough to connect it, while the covered half plus the
+// pad's own clearance seal the shadow against hidden crossings.
+const DIAG_S0 = PAD_R + CLEARANCE; // zone starts past the pad clearance
+const DIAG_HALF = 3;               // zone half-width across the axis
+const DIAG_MARGIN = 3;             // half-track + clearance past the shadow
+const DIAG_WIN = 5;                // connection window around an in-band pad
 
-// ---- rectangle algebra ----------------------------------------------------
+function diagonalBlock(pad, s0, s1) {
+  const corner = (s, u) => [
+    pad.x + (-Math.SQRT1_2) * s + Math.SQRT1_2 * u,
+    pad.y + (-Math.SQRT1_2) * s - Math.SQRT1_2 * u,
+  ];
+  return [
+    corner(s0, DIAG_HALF), corner(s0, -DIAG_HALF),
+    corner(s1, -DIAG_HALF), corner(s1, DIAG_HALF),
+  ];
+}
 
-// Subtracts axis-aligned cuts from an axis-aligned rect. Returns a set of
-// non-overlapping rect pieces covering (rect - cuts). Cuts are corridors that
-// fully cross the rect, so a guillotine decomposition is exact.
-export function subtractRects(rect, cuts) {
-  let pieces = [rect];
-  for (const cut of cuts) {
-    const next = [];
-    for (const p of pieces) next.push(...subtractOne(p, cut));
-    pieces = next;
+// s = up-screen distance along -(1,1)/sqrt(2), u = offset across it.
+function buildNoTrackZones(allPads, stackedPads) {
+  const zones = [];
+  for (const sp of stackedPads) {
+    const sMax = Math.max(DIAG_S0 + 8, Math.SQRT2 * (sp.z0 - TSV_DEFAULTS.zBase) + DIAG_MARGIN);
+    const blockers = [];
+    for (const q of allPads) {
+      if (q === sp.pad) continue;
+      const s = -((q.x - sp.pad.x) + (q.y - sp.pad.y)) / Math.SQRT2;
+      const u = ((q.x - q.y) - (sp.pad.x - sp.pad.y)) / Math.SQRT2;
+      if (s > DIAG_S0 - 1 && s < sMax && Math.abs(u) < DIAG_HALF + PAD_R + CLEARANCE) {
+        blockers.push(s);
+      }
+    }
+    blockers.sort((a, b) => a - b);
+    let cur = DIAG_S0;
+    for (const sb of blockers) {
+      // full-width window: an in-shadow pad's own connection necessarily
+      // traverses the shadow right at its plug-in point — that residual is
+      // inherent and short — while anything crossing the window away from
+      // the pads is pushed beside the barrel (|u| >= ~4, visible)
+      if (sb - DIAG_WIN - cur >= 1) zones.push(diagonalBlock(sp.pad, cur, sb - DIAG_WIN));
+      cur = Math.max(cur, sb + DIAG_WIN);
+    }
+    if (sMax - cur >= 1) zones.push(diagonalBlock(sp.pad, cur, sMax));
   }
-  return pieces.filter((p) => p.x1 - p.x0 > 0.5 && p.y1 - p.y0 > 0.5);
-}
-
-function subtractOne(p, cut) {
-  const ix0 = Math.max(p.x0, cut.x0);
-  const ix1 = Math.min(p.x1, cut.x1);
-  const iy0 = Math.max(p.y0, cut.y0);
-  const iy1 = Math.min(p.y1, cut.y1);
-  if (ix0 >= ix1 || iy0 >= iy1) return [p];
-  const out = [];
-  if (cut.x0 > p.x0) out.push({ x0: p.x0, y0: p.y0, x1: cut.x0, y1: p.y1 });
-  if (cut.x1 < p.x1) out.push({ x0: cut.x1, y0: p.y0, x1: p.x1, y1: p.y1 });
-  const mx0 = Math.max(ix0, p.x0);
-  const mx1 = Math.min(ix1, p.x1);
-  if (cut.y0 > p.y0) out.push({ x0: mx0, y0: p.y0, x1: mx1, y1: cut.y0 });
-  if (cut.y1 < p.y1) out.push({ x0: mx0, y0: cut.y1, x1: mx1, y1: p.y1 });
-  return out;
-}
-
-function normRect(x0, y0, x1, y1) {
-  return { x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
-}
-
-function rectContains(r, x, y) {
-  return x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+  return zones;
 }
 
 // ---- scene -> board spec --------------------------------------------------
 
 export function buildBoardSpec(scene) {
   const byId = scene.byId;
-  const rootOf = (id) => {
-    let b = byId.get(id);
-    while (b.parentId && byId.has(b.parentId)) b = byId.get(b.parentId);
-    return b;
-  };
-
-  // TSV escape corridors, grouped by the top-level package they pierce.
-  const corridors = new Map(); // rootId -> cut[]
-  const addCorridor = (rootId, cut) => {
-    if (!corridors.has(rootId)) corridors.set(rootId, []);
-    corridors.get(rootId).push(cut);
-  };
 
   const footprints = new Map(); // boxId -> {id, pads: []}
   const nets = new Map();       // "N<edgeIndex>" -> {index, name, pads: []}
+  const allPads = [];           // every landing pad, for shadow truncation
+  const stackedPads = [];       // {pad, z0}: TSV columns cast route shadows
 
   scene.edges.forEach((e, index) => {
     if (e.hidden || e.self) return;
@@ -108,27 +115,11 @@ export function buildBoardSpec(scene) {
       const pw = pinWorld(b, o, pin);
       const n = PIN_NORMALS[pin.face];
       const stacked = !!b.parentId;
-      let land;
-      if (stacked) {
-        // pad directly below the pin, on the base layer; the corridor runs
-        // from just behind the pad, along the face normal, out of the
-        // top-level ancestor's outline
-        land = { x: pw.x, y: pw.y };
-        const root = rootOf(b.id);
-        const exitX = n[0] > 0 ? root.x + root.w + EDGE_EXIT
-          : n[0] < 0 ? root.x - EDGE_EXIT : land.x;
-        const exitY = n[1] > 0 ? root.y + root.d + EDGE_EXIT
-          : n[1] < 0 ? root.y - EDGE_EXIT : land.y;
-        const half = CORRIDOR_W / 2;
-        addCorridor(root.id, normRect(
-          land.x - n[0] * (PAD_R + CLEARANCE) - (n[1] !== 0 ? half : 0),
-          land.y - n[1] * (PAD_R + CLEARANCE) - (n[0] !== 0 ? half : 0),
-          exitX + (n[1] !== 0 ? half : 0),
-          exitY + (n[0] !== 0 ? half : 0),
-        ));
-      } else {
-        land = { x: pw.x + n[0] * (PAD_R + CLEARANCE), y: pw.y + n[1] * (PAD_R + CLEARANCE) };
-      }
+      const land = stacked
+        ? { x: pw.x, y: pw.y } // pad directly below the pin, on the base layer
+        : { x: pw.x + n[0] * (PAD_R + CLEARANCE), y: pw.y + n[1] * (PAD_R + CLEARANCE) };
+      allPads.push(land);
+      if (stacked) stackedPads.push({ pad: land, z0: b.z0 });
       const fpId = b.id;
       if (!footprints.has(fpId)) footprints.set(fpId, { id: fpId, x: b.x + b.w / 2, y: b.y + b.d / 2, pads: [] });
       const fp = footprints.get(fpId);
@@ -142,17 +133,6 @@ export function buildBoardSpec(scene) {
     }
   });
 
-  const keepouts = [];
-  for (const b of scene.boxes) {
-    if (b.parentId) continue;
-    const cuts = corridors.get(b.id) ?? [];
-    for (const piece of subtractRects(
-      { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.d }, cuts,
-    )) {
-      keepouts.push([piece.x0, piece.y0, piece.x1, piece.y1]);
-    }
-  }
-
   return {
     scaleNm: SCALE_NM,
     traceW: TRACE_W,
@@ -161,7 +141,7 @@ export function buildBoardSpec(scene) {
     viaD: 2 * VIA_R,
     viaDrill: VIA_R,
     board: { w: scene.bounds.w, d: scene.bounds.d },
-    keepouts,
+    noTrackZones: buildNoTrackZones(allPads, stackedPads),
     footprints: [...footprints.values()],
     nets: [...nets.values()].map((n) => ({ name: n.name, index: n.index, pads: n.pads })),
   };

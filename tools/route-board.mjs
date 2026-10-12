@@ -5,8 +5,10 @@
 
 // PCB-traces the relations of every diagram: parser + layout (the same pure
 // modules the browser runs), board geometry (tools/lib/boardgeo.mjs), then
-// KiCad + Freerouting (tools/kicad_route.py) produce copper tracks on the
-// base layer. Output: diagrams/<name>.routes.json, consumed by js/render.js.
+// KiCad + Freerouting (tools/kicad_route.py) produce copper tracks. Routing
+// runs in two passes: first F.Cu-only, and only when that leaves a net
+// unrouted again on both layers (F.Cu + B.Cu). Output:
+// diagrams/<name>.routes.json, consumed by js/render.js.
 //
 //   node tools/route-board.mjs [--force] [diagram.puml ...]
 //
@@ -88,20 +90,20 @@ async function main() {
   if (failed > 0) process.exitCode = 1;
 }
 
-async function routeDiagram(base, scene, routesPath) {
-  const spec = buildBoardSpec(scene);
-  const specPath = join(tmpDir, `${base}.spec.json`);
-  const sesPath = join(tmpDir, `${base}.ses`);
-  writeFileSync(specPath, JSON.stringify(spec));
-  const py = spawnSync('python3', [join(root, 'tools', 'kicad_route.py'), specPath, sesPath], {
+function spawnRouter(specPath, sesPath, singleLayer) {
+  const args = [join(root, 'tools', 'kicad_route.py'), specPath, sesPath];
+  if (singleLayer) args.push('--single-layer');
+  const py = spawnSync('python3', args, {
     stdio: ['ignore', 'pipe', 'inherit'],
     encoding: 'utf8',
   });
   if (py.error) throw py.error;
   if (py.status !== 0) throw new Error(`kicad_route.py exited ${py.status}`);
-  const ses = readFileSync(sesPath, 'utf8');
-  const world = sesToWorld(ses);
+}
 
+// Chains every net's routed segments pad-to-pad; returns the per-net map for
+// routes.json plus the count of nets whose chain reached the far pad.
+function chainNets(scene, spec, world) {
   const nets = {};
   let okCount = 0;
   for (const net of spec.nets) {
@@ -130,16 +132,36 @@ async function routeDiagram(base, scene, routesPath) {
       unrouted,
     };
   }
+  return { nets, okCount };
+}
+
+async function routeDiagram(base, scene, routesPath) {
+  const spec = buildBoardSpec(scene);
+  const specPath = join(tmpDir, `${base}.spec.json`);
+  const sesPath = join(tmpDir, `${base}.ses`);
+  writeFileSync(specPath, JSON.stringify(spec));
+
+  // Pass 1: F.Cu only. Pass 2 (both layers) only when pass 1 leaves a net
+  // unrouted.
+  spawnRouter(specPath, sesPath, true);
+  let world = sesToWorld(readFileSync(sesPath, 'utf8'));
+  let res = chainNets(scene, spec, world);
+  if (res.okCount < spec.nets.length) {
+    console.log(`${base}: F.Cu-only left ${spec.nets.length - res.okCount} net(s) unrouted, retrying on 2 layers`);
+    spawnRouter(specPath, sesPath, false);
+    world = sesToWorld(readFileSync(sesPath, 'utf8'));
+    res = chainNets(scene, spec, world);
+  }
 
   const out = {
     version: 1,
     traceW: spec.traceW,
     padR: spec.padD / 2,
     viaR: spec.viaD / 2,
-    nets,
+    nets: res.nets,
   };
   writeFileSync(routesPath, JSON.stringify(out) + '\n');
-  console.log(`routed ${base}: ${okCount}/${spec.nets.length} nets`);
+  console.log(`routed ${base}: ${res.okCount}/${spec.nets.length} nets`);
 }
 
 main();

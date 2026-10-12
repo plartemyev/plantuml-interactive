@@ -1,0 +1,70 @@
+@startuml
+
+'scale 1920*1080
+skinparam Padding 10
+skinparam DefaultFontSize 22
+
+actor External_producers
+actor Analyst
+actor Report_generator
+
+package Kinesis {
+    queue "Stream A" as stream_a
+    queue "Stream B" as stream_b
+}
+
+package Lambda {
+    component "K2L_function" as k2l_func #Orange
+    component "L2A function" as l2a_func
+}
+
+package S3 {
+    folder bucket_stream_a {
+        folder landing {
+            file "Europe/2019/02/23.zip" as landing_pack_0
+            file "Europe/2019/02/22.zip" as landing_pack_1
+            file "Europe/2019/02/21.zip" as landing_pack_2
+            file "Europe/2019/02/20.zip" as landing_pack_3
+            file "state.json"
+        }
+        folder atomic {
+            file "entityregion=Europe/entitydate=2019-02-23/part_0.parquet" as atomic_parquet0
+            file "entityregion=Europe/entitydate=2019-02-22/part_0.parquet" as atomic_parquet1
+            file "entityregion=Europe/entitydate=2019-02-21/part_0.parquet" as atomic_parquet2
+            file "entityregion=Europe/entitydate=2019-02-20/part_0.parquet" as atomic_parquet3
+        }
+    }
+}
+
+package Athena {
+    folder data_catalog {
+        database stream_a_table
+        database stream_b_table
+    }
+}
+
+Lambda -[hidden] Athena
+External_producers -left-> stream_a
+stream_a --> k2l_func
+k2l_func .> stream_a
+k2l_func .> state.json
+k2l_func -> state.json
+k2l_func -> landing_pack_0
+k2l_func .> landing_pack_0
+l2a_func .> landing_pack_0
+l2a_func --> atomic_parquet0
+stream_a_table ..> atomic
+Analyst ..> stream_a_table
+Report_generator ..> stream_a_table
+
+atomic_parquet0 -[hidden]left- atomic_parquet1
+atomic_parquet1 -[hidden]- atomic_parquet2
+atomic_parquet2 -[hidden]left- atomic_parquet3
+
+landing_pack_0 -[hidden]left- landing_pack_1
+landing_pack_1 -[hidden]- landing_pack_2
+landing_pack_2 -[hidden]left- landing_pack_3
+
+atomic -[hidden] landing
+
+@enduml

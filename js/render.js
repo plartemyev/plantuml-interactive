@@ -70,6 +70,7 @@ const TSV_LINER_D = '#1e6a5b';
 const TSV_LINER_L_HI = '#53e3c2';
 const TSV_LINER_D_HI = '#2a9a85';
 const SQRT2 = Math.sqrt(2); // world circle radius -> projected ellipse semi-x
+const BOARD_Z = TSV_DEFAULTS.zBase; // the board plane the routed copper lives on
 const ZERO_OFF = { dx: 0, dy: 0, lift: 0 }; // the board (pads never move)
 
 const STUB = 14;        // wire stub length leaving a package pin
@@ -362,7 +363,7 @@ export function createRenderer(canvas, hooks = {}) {
       if (!e || r.unrouted || !Array.isArray(r.path) || r.path.length < 2) continue;
       e.routed = true;
       e.routeIdx = idx;
-      const pts = r.path.map(([x, y]) => project(x, y, 0.3));
+      const pts = r.path.map(([x, y]) => project(x, y, BOARD_Z));
       let minx = Infinity; let maxx = -Infinity; let miny = Infinity; let maxy = -Infinity;
       for (const p of pts) {
         minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
@@ -374,7 +375,7 @@ export function createRenderer(canvas, hooks = {}) {
         pts,
         bounds: { minx, maxx, miny, maxy },
         runs: layerRuns(r),
-        viaPts: (r.vias ?? []).map(([x, y]) => project(x, y, 0.3)),
+        viaPts: (r.vias ?? []).map(([x, y]) => project(x, y, BOARD_Z)),
         midPt: { x: mid[0], y: mid[1], z: 6 },
       });
     }
@@ -670,10 +671,10 @@ export function createRenderer(canvas, hooks = {}) {
     for (const s of r.segs ?? []) {
       const layer = s[4] ?? 0;
       if (!cur || cur.layer !== layer) {
-        cur = { layer, pts: [project(s[0], s[1], 0.3)] };
+        cur = { layer, pts: [project(s[0], s[1], BOARD_Z)] };
         runs.push(cur);
       }
-      cur.pts.push(project(s[2], s[3], 0.3));
+      cur.pts.push(project(s[2], s[3], BOARD_Z));
     }
     return runs;
   }
@@ -743,7 +744,7 @@ export function createRenderer(canvas, hooks = {}) {
         const o = boxOrigin(b, eEff);
         const pw = pinWorld(b, o, pin);
         const top = project(pw.x, pw.y, pw.z);
-        const bot = project(end.land[0], end.land[1], 0.3);
+        const bot = project(end.land[0], end.land[1], BOARD_Z);
         ctx.strokeStyle = isFocus ? (e.color ?? ACCENT) : COPPER;
         ctx.lineWidth = 1.4 / cam.scale;
         ctx.beginPath();

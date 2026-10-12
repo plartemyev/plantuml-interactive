@@ -27,9 +27,14 @@ in 2:1 isometric projection with cel shading.
 Relations are not drawn as wires in the air: they become **nets on a 2-layer
 board**, routed by [Freerouting](https://freerouting.org) (GPL, the standard
 open-source autorouter) through a KiCad round-trip. Each diagram layout is
-exported as a board (packages = keepout rule areas on both copper layers, pin
-slots = SMD pads, stacked blocks = TSV landing pads with escape corridors),
-autorouted headlessly, and the resulting tracks/vias are stored as
+exported as a board (pin slots = SMD pads, stacked blocks = TSV landing pads;
+the board carries no package keepouts, so the autorouter may run copper
+anywhere — including under packages, where the selection-time occluder
+ghosting reveals it — except no-track strips covering each TSV column's
+projected shadow, which keep traces in front of the columns on screen).
+Routing runs in two
+passes: F.Cu only first, and only if that leaves nets unrouted, again on
+both layers (F.Cu + B.Cu). The resulting tracks/vias are stored as
 `diagrams/<name>.routes.json` which the renderer paints as base-layer copper
 (dimmed for the underside layer, vias as donuts).
 

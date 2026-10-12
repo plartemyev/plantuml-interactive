@@ -53,7 +53,7 @@ test('root piece is clamped to the board, body pieces keep their z0', () => {
 test('a die sitting directly on the root yields a single piece', () => {
   const pieces = tsvPieces({ id: 'die', z0: 22 }, [{ id: 'root', z0: 0 }]);
   assert.equal(pieces.length, 1);
-  assert.deepEqual(pieces[0], { id: 'root', z0: 0.3, z1: 22 });
+  assert.deepEqual(pieces[0], { id: 'root', z0: TSV_DEFAULTS.zBase, z1: 22 });
 });
 
 test('pieces are deterministic and finite', () => {

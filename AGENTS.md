@@ -308,7 +308,22 @@ second-nature and not using them becomes unimaginable.
   `window.__view.state()`/pixel probes on the canvas instead of assuming the
   full window height.
 - **PCB routing pipeline** (`npm run route`): relations are autorouted as
-  copper on a 2-layer board via KiCad + Freerouting. Peculiarities discovered
+  copper on a 2-layer board via KiCad + Freerouting. The board carries no
+  package keepouts — copper may run under packages (the selection-time
+  occluder ghosting keeps it readable) — except no-track zones on both
+  copper layers covering each TSV column's projection shadow on the board:
+  the screen band |d(x-y)| <= linerR*sqrt(2) up-screen of the pad, within
+  the column height. A trace crossing that shadow is painted over by the
+  column and reads as plugging into its top instead of its base pad
+  (tools/lib/boardgeo.mjs `buildNoTrackZones`; polygon rule areas
+  export/import fine with the plain jar). Where other landing pads sit
+  inside a shadow, the strip resumes behind them, leaving a connection
+  window on the pad's own side — their plug-in point stays briefly shadowed,
+  which is inherent and short. Routing is two-pass
+  (tools/route-board.mjs): pass 1 runs `kicad_route.py --single-layer`,
+  which blocks B.Cu board-wide so only F.Cu is used; only when that leaves
+  nets unrouted does pass 2 re-run on both layers and replace the result.
+  Peculiarities discovered
   empirically (KiCad 10.0.7, Freerouting 2.5.0):
   - Freerouting 2.5.0 jar requires **Java ≥ 25** (class file 69): use
     `/usr/lib/jvm/java-27-openjdk/bin/java`; the system default is Java 17.
@@ -318,9 +333,10 @@ second-nature and not using them becomes unimaginable.
     `java -jar freerouting.jar -de x.dsn -do x.ses -mp 40 -mt 1` (exits by
     itself; `-mt 1` keeps results deterministic).
   - A board with **no via padstack at all** crashes Freerouting 2.5
-    (`NullPointerException ... viaRule is null`). To get 2-layer routing we
-    keep vias and mirror every F.Cu keepout onto B.Cu instead of blocking
-    B.Cu entirely.
+    (`NullPointerException ... viaRule is null`). Even when vias can never be
+    placed (e.g. the F.Cu-only pass blocks B.Cu board-wide, vias included),
+    the via padstack definition must stay in the DSN — blocking a layer
+    entirely with a rule area is fine as long as the padstack exists.
   - pcbnew SWIG (system `python3`, module `pcbnew`): **every proxy added to
     the board must be kept alive** in a Python list (PCB_SHAPE, ZONE, the
     SHAPE_POLY_SET passed to `SetOutline`, NETINFO_ITEM, FOOTPRINT, PAD) —
