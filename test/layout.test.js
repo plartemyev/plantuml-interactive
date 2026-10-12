@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { parsePlantUml } from '../js/parser.js';
-import { buildScene, packGrid, isContainer } from '../js/layout.js';
+import { buildScene, packGrid, isContainer, pinWorld, PIN_NORMALS } from '../js/layout.js';
+import { occluderHex, segmentPolyDistance } from '../js/occlude.js';
 
 const model = (src) => parsePlantUml(src);
 
@@ -134,4 +135,81 @@ test('hidden relations are kept but flagged', () => {
 test('container detection matches deployment vocabulary', () => {
   for (const k of ['frame', 'package', 'node', 'cloud']) assert.ok(isContainer(k));
   assert.ok(!isContainer('database'));
+});
+
+test('stacked leaf pins escape body shadows so the connection stays readable', () => {
+  const m = model(`@startuml
+node vpc {
+  frame subnet {
+    database pg
+    queue jobs
+  }
+}
+jobs --> pg : poll
+`);
+  const s = buildScene(m);
+  const e = s.edges.find((x) => x.fromId === 'jobs' && x.toId === 'pg');
+  assert.ok(e, 'poll edge exists');
+  const jobs = s.byId.get('jobs');
+  const pg = s.byId.get('pg');
+  assert.ok(jobs.parentId && pg.parentId, 'both stacked');
+  const pad = (b, pin) => pinWorld(b, b, pin);
+  const a = pad(jobs, e.fromPin);
+  const b = pad(pg, e.toPin);
+  // neither landing pad may hug its own body's sweep shadow and the straight
+  // pad-to-pad run must keep real clearance from both bodies (occlude.js
+  // distances: non-occluded alone still reads as glued to the edge)
+  for (const [box, p] of [[jobs, a], [pg, b]]) {
+    const hex = occluderHex(box);
+    const d = segmentPolyDistance(p.x, p.y, p.x + 0.01, p.y + 0.01, hex);
+    assert.ok(d >= 8, `${box.id} pad only ${d.toFixed(1)} from its own body shadow`);
+  }
+  const runJobs = segmentPolyDistance(a.x, a.y, b.x, b.y, occluderHex(jobs));
+  const runPg = segmentPolyDistance(a.x, a.y, b.x, b.y, occluderHex(pg));
+  assert.ok(runJobs >= 8, `poll run only ${runJobs.toFixed(1)} from jobs body`);
+  assert.ok(runPg >= 8, `poll run only ${runPg.toFixed(1)} from pg body`);
+});
+
+test('de-shadow pass never moves port pins', () => {
+  const m = model(`@startuml
+node vpc {
+  node peer
+  node hub {
+    portin pin1
+  }
+  peer --> pin1
+}
+`);
+  const s = buildScene(m);
+  const e = s.edges.find((x) => x.toId === 'hub');
+  assert.ok(e, 'relation resolves to the hub');
+  // single declared port keeps its spread-formula slot (0.12 + 0.76 * 1/2)
+  assert.equal(e.toPin.t, 0.5);
+});
+
+test('landing pads of different nets keep clearance after de-shadow', () => {
+  const src = fs.readFileSync('samples/deployment.puml', 'utf8');
+  const s = buildScene(model(src));
+  const pads = [];
+  s.edges.forEach((e, i) => {
+    if (e.self) return;
+    for (const [id, pin] of [[e.fromId, e.fromPin], [e.toId, e.toPin]]) {
+      const pos = s.byId.get(id);
+      const pw = pinWorld(pos, pos, pin);
+      const n = PIN_NORMALS[pin.face];
+      pads.push({
+        net: i,
+        x: pos.parentId ? pw.x : pw.x + n[0] * 5,
+        y: pos.parentId ? pw.y : pw.y + n[1] * 5,
+      });
+    }
+  });
+  for (let i = 0; i < pads.length; i++) {
+    for (let j = i + 1; j < pads.length; j++) {
+      if (pads[i].net === pads[j].net) continue; // same net pads may touch
+      const d2 = (pads[i].x - pads[j].x) ** 2 + (pads[i].y - pads[j].y) ** 2;
+      assert.ok(d2 >= 8.5 * 8.5,
+        `pads ${i} and ${j} (nets ${pads[i].net}/${pads[j].net}) are ${Math.sqrt(d2).toFixed(2)} apart`);
+    }
+  }
 });

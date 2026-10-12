@@ -12,6 +12,7 @@
 // Pure module: no DOM, no canvas — unit-testable under Node.
 
 import { wrapText } from './textutil.js';
+import { occluderHex, segmentPolyDistance } from './occlude.js';
 
 export const M = {
   charW: 6.4,        // estimated average glyph width at font 13 (world units)
@@ -244,6 +245,15 @@ export function buildScene(model) {
     }
   }
 
+  // De-shadow pass: a landing pad directly below a stacked die's pin sits in
+  // the die's own isometric shadow (the board sweep of its body, occlude.js)
+  // unless the pin sits near the face's front corner — and pads shadowed by
+  // the *peer's* body hide the whole connection behind it. Nudge spread pins
+  // (never ports) within their free interval until the pad and the straight
+  // pad-to-peer run clear both bodies' sweep hexagons; pins that cannot
+  // clear keep their spread slot.
+  deShadowPins(pending, positions);
+
   const edges = pending.map((p) => ({
     fromId: p.r.fromId, toId: p.r.toId,
     fromPin: { face: p.a.face, t: p.a.t },
@@ -326,4 +336,109 @@ function faceFor(dx, dy) {
 
 function crossCoord(face, c) {
   return face === 0 || face === 2 ? c.cy : c.cx;
+}
+
+// ---- de-shadow -------------------------------------------------------------
+
+const PAD_CLEAR = 5;        // landing pad standoff (boardgeo PAD_R + CLEARANCE)
+const PAD_SEP = 8.5;        // min pad center distance across nets (2*PAD_R + CLEARANCE + margin)
+const SHADOW_MARGIN = 8;    // min plan clearance from occluder hexagons: merely
+                            // non-occluded pads hug the silhouette edge and
+                            // their traces read as part of the edge line
+const DESHADOW_STEPS = 16;  // probe resolution within a face's free interval
+
+// Board-plane landing pad of a pin: stacked dies drop the pad directly below
+// the pin; top-level packages offset it outward along the face normal
+// (mirrors buildBoardSpec in tools/lib/boardgeo.mjs).
+function pinLand(pos, face, t) {
+  const pw = pinWorld(pos, pos, { face, t });
+  if (pos.parentId) return { x: pw.x, y: pw.y };
+  const n = PIN_NORMALS[face];
+  return { x: pw.x + n[0] * PAD_CLEAR, y: pw.y + n[1] * PAD_CLEAR };
+}
+
+// Nearest free slot on the pin's face whose geometry satisfies `clear`;
+// null when the free interval around the current slot offers nothing.
+function bestFreeSlot(e, clear, claimed) {
+  const slots = claimed.get(e.box.id + ':' + e.face);
+  let lo = M.pinMin;
+  let hi = M.pinMax;
+  for (const s of slots) {
+    if (s < e.t - 1e-9 && s > lo) lo = s;
+    if (s > e.t + 1e-9 && s < hi) hi = s;
+  }
+  if (hi - lo <= 1e-9) return null;
+  let best = null;
+  for (let i = 0; i <= DESHADOW_STEPS; i++) {
+    const t = lo + ((hi - lo) * i) / DESHADOW_STEPS;
+    if (clear(t) && (best == null || Math.abs(t - e.t) < Math.abs(best - e.t))) best = t;
+  }
+  return best;
+}
+
+function deShadowEnd(p, e, other, pass, claimed, positions, pending) {
+  if (e.port && e.box.kind !== 'port' && e.port.portIndex >= 0) return;
+  const pos = positions.get(e.box.id);
+  if (!pos || !pos.parentId) return; // stacked dies only; top-level leads stay put
+  const hex = occluderHex(pos);
+  const peerPos = other && positions.get(other.box.id);
+  const peerHex = peerPos ? occluderHex(peerPos) : null;
+  // corner-escaping pins must not converge onto another net's landing pad
+  const padSep = (t) => {
+    const l = pinLand(pos, e.face, t);
+    for (const q of pending) {
+      if (q.r.self || q.i === p.i) continue;
+      for (const end of [q.a, q.b]) {
+        const qp = positions.get(end.box.id);
+        if (!qp) continue;
+        const ql = pinLand(qp, end.face, end.t);
+        const dx = l.x - ql.x;
+        const dy = l.y - ql.y;
+        if (dx * dx + dy * dy < PAD_SEP * PAD_SEP) return false;
+      }
+    }
+    return true;
+  };
+  const selfHit = (t) => {
+    const l = pinLand(pos, e.face, t);
+    return segmentPolyDistance(l.x, l.y, l.x + 0.01, l.y + 0.01, hex) < SHADOW_MARGIN;
+  };
+  const runHit = (t) => {
+    if (!peerPos) return false;
+    const l = pinLand(pos, e.face, t);
+    const pl = pinLand(peerPos, other.face, other.t);
+    return segmentPolyDistance(l.x, l.y, pl.x, pl.y, hex) < SHADOW_MARGIN
+      || segmentPolyDistance(l.x, l.y, pl.x, pl.y, peerHex) < SHADOW_MARGIN;
+  };
+  if (!(pass === 'self' ? selfHit(e.t) : selfHit(e.t) || runHit(e.t))) return;
+  const clear = (t) => !selfHit(t) && (pass === 'self' || !runHit(t)) && padSep(t);
+  const best = bestFreeSlot(e, clear, claimed);
+  if (best == null) return;
+  const slots = claimed.get(e.box.id + ':' + e.face);
+  slots.splice(slots.indexOf(e.t), 1);
+  slots.push(best);
+  slots.sort((u, v) => u - v);
+  e.t = best;
+}
+
+function deShadowPins(pending, positions) {
+  const claimed = new Map(); // "id:face" -> sorted slot list of every pin on the face
+  for (const p of pending) {
+    if (p.r.self) continue;
+    for (const end of [p.a, p.b]) {
+      const key = end.box.id + ':' + end.face;
+      if (!claimed.has(key)) claimed.set(key, []);
+      claimed.get(key).push(end.t);
+    }
+  }
+  for (const list of claimed.values()) list.sort((u, v) => u - v);
+  // Sweep 1 frees pads from their own body; sweep 2 pulls the pad-to-peer
+  // run out of both hexagons (peers may move within the same sweep).
+  for (const pass of ['self', 'peer']) {
+    for (const p of pending) {
+      if (p.r.self) continue;
+      deShadowEnd(p, p.a, p.b, pass, claimed, positions, pending);
+      deShadowEnd(p, p.b, p.a, pass, claimed, positions, pending);
+    }
+  }
 }

@@ -344,3 +344,27 @@ second-nature and not using them becomes unimaginable.
     pins spread over the remaining slots (js/layout.js). Without this, a port
     pin and a spread pin can share a spot — harmless for the old airborne
     wires but a short (unroutable net) for PCB pads.
+  - De-shadow pin pass (js/layout.js `deShadowPins`): a stacked die's landing
+    pad sits directly below its pin, so on back faces (2: -x, 3: -y) the pad
+    is inside the body's own isometric shadow unless the pin sits near the
+    face's front corner (`t > 1 - z0/w` resp. `/d`; front faces 0/1 are never
+    self-shadowed — the sweep preserves x-y). Spread pins are nudged to the
+    nearest slot where the pad and the straight pad-to-peer run keep
+    SHADOW_MARGIN (8 world units) of plan clearance from both bodies' sweep
+    hexagons (js/occlude.js `segmentPolyDistance` — plain non-occlusion is
+    not enough: a pad 1-2 units outside the hexagon hugs the silhouette edge
+    and its trace reads as part of the edge line) AND stay >= 8.5 world units
+    from every other net's pad — without the clearance guard corner-escaping
+    pins converge on neighbours' pads and Freerouting plateaus with
+    unresolved violations (observed on deployment.puml: identical score,
+    5 unrouted + 2 violations, exploding memory, passes 13+). Ports never
+    move; top-level package leads stay put (only stacked endpoints are
+    nudged). Residual shadowed pins (crowded faces, port slots) remain
+    covered by the selection-time occluder ghosting.
+  - Edge label chips (js/render.js `drawEdgeLabel`) sit offset perpendicular
+    to the route's local direction, on whichever side is free of package
+    hulls — a chip centered on the copper hides short runs entirely (the
+    poll net disappeared under its own label).
+  - Route freshness: `route-board.mjs` TOOLCHAIN now also includes
+    js/parser.js and js/layout.js — pin positions live in the layout, so a
+    layout change stales every .routes.json (re-run `npm run route`).

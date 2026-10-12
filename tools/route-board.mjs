@@ -35,6 +35,9 @@ const TOOLCHAIN = [
   join(root, 'tools', 'route-board.mjs'),
   join(root, 'tools', 'lib', 'boardgeo.mjs'),
   join(root, 'tools', 'kicad_route.py'),
+  // layout/parser drive pin positions, so their changes also stale the routes
+  join(root, 'js', 'parser.js'),
+  join(root, 'js', 'layout.js'),
 ];
 
 function mtime(p) {

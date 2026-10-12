@@ -70,6 +70,39 @@ export function segmentOccluded(ax, ay, bx, by, hex) {
   return false;
 }
 
+// Plan distance from point p to segment ab.
+function pointSegDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+// Plan distance between two segments (0 when they touch or cross).
+function segSegDist(ax, ay, bx, by, cx, cy, dx, dy) {
+  if (segSeg(ax, ay, bx, by, cx, cy, dx, dy)) return 0;
+  return Math.min(
+    pointSegDist(ax, ay, cx, cy, dx, dy),
+    pointSegDist(bx, by, cx, cy, dx, dy),
+    pointSegDist(cx, cy, ax, ay, bx, by),
+    pointSegDist(dx, dy, ax, ay, bx, by),
+  );
+}
+
+// Plan distance from segment a->b to a sweep hexagon: 0 when any part is
+// covered, otherwise the gap to the nearest hexagon edge. The clearance
+// flavour of segmentOccluded: positive but tiny means the geometry merely
+// hugs the occluder's silhouette edge and still reads as glued to it.
+export function segmentPolyDistance(ax, ay, bx, by, poly) {
+  if (segmentOccluded(ax, ay, bx, by, poly)) return 0;
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    best = Math.min(best, segSegDist(ax, ay, bx, by, poly[j].x, poly[j].y, poly[i].x, poly[i].y));
+  }
+  return best;
+}
+
 // Ids of boxes whose board shadow covers any segment of any path.
 // `paths` are arrays of [x, y] board points; excludeId (the selected box
 // itself) is never reported.

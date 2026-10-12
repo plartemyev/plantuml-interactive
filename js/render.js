@@ -1015,20 +1015,48 @@ export function createRenderer(canvas, hooks = {}) {
 
   function drawEdgeLabel(e, eff) {
     let m;
+    let dir = null;
     const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
     if (rv) {
       m = rv.midPt;
+      // local screen direction around the midpoint, to keep the chip off the copper
+      const i = Math.min(Math.floor(rv.raw.path.length / 2), rv.pts.length - 2);
+      if (i >= 0) dir = [rv.pts[i + 1].x - rv.pts[i].x, rv.pts[i + 1].y - rv.pts[i].y];
     } else {
       const pts = routePoints(e, scene.byId, eff);
-      m = pts[Math.floor(pts.length / 2) - 1] ?? pts[0];
+      const i = Math.max(0, Math.min(Math.floor(pts.length / 2) - 1, pts.length - 2));
+      m = pts[i] ?? pts[0];
+      if (pts.length >= 2) {
+        const j = Math.min(i + 1, pts.length - 1);
+        const q0 = project(pts[i].x, pts[i].y, pts[i].z ?? 0);
+        const q1 = project(pts[j].x, pts[j].y, pts[j].z ?? 0);
+        dir = [q1.x - q0.x, q1.y - q0.y];
+      }
     }
-    const p = project(m.x, m.y, m.z);
     const first = (e.label ?? '').split('\n')[0];
     if (!first) return;
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     const w = ctx.measureText(first).width;
     const pad = 4 / cam.scale;
     const h = 16 / cam.scale;
+    const p = project(m.x, m.y, m.z);
+    if (dir) {
+      const len = Math.hypot(dir[0], dir[1]);
+      if (len > 1e-6) {
+        const off = h / 2 + 3 / cam.scale;
+        const nx = -dir[1] / len;
+        const ny = dir[0] / len;
+        // prefer the side in open space: a chip over a package reads as
+        // part of that package (hulls are already recorded for hit testing)
+        const free = (c) => !hulls.some((hl) =>
+          c[0] >= hl.minx && c[0] <= hl.maxx && c[1] >= hl.miny && c[1] <= hl.maxy
+          && pointInPoly(c[0], c[1], hl.poly));
+        const cand = [[p.x + nx * off, p.y + ny * off], [p.x - nx * off, p.y - ny * off]];
+        const pick = !free(cand[0]) && free(cand[1]) ? 1 : 0;
+        p.x = cand[pick][0];
+        p.y = cand[pick][1];
+      }
+    }
     const isFocus = focusEdges.has(e);
     ctx.globalAlpha = isFocus ? 1 : 0.55;
     ctx.fillStyle = 'rgba(9, 13, 18, 0.85)';

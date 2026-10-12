@@ -129,7 +129,8 @@ js/textutil.js        label wrapping (shared by layout + tests)
 js/layout.js          deterministic containment-tree layout:
                       grid packing per container, PoP z-stacking,
                       edge pin assignment (face + slot, port slots claimed
-                      first), painter order
+                      first, spread slots dodge body shadows so landing
+                      pads and their traces stay readable), painter order
 js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       packages, base-layer copper tracks + vias (routes.json),
                       pin leads, LOD tiers, hover/selection edge highlights,
