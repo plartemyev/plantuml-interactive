@@ -63,9 +63,10 @@ Then:
 - **click a package** — pin the selection: animated exploded view (children
   spread and lift, relation pins drop as dashed leaders to their landing
   pads), its nets glow on the copper with their labels, and occluding
-  packages fade to 30% so every traced connection stays visible; notes of
-  the package and of its net neighbors appear. **Click empty space** to
-  deselect and revert everything.
+  packages fade to 30% so every traced connection stays visible end to end
+  (board copper *and* the through-chip via drops); notes of the package and
+  of its net neighbors appear. **Click empty space** to deselect and revert
+  everything.
 - **hover a package** — tooltip only (the scene never changes under the cursor)
 - face labels appear progressively with zoom level (LOD); net labels and
   notes are hidden entirely until a package is selected
@@ -127,8 +128,8 @@ js/render.js          Canvas 2D renderer: 2:1 dimetric projection, cel-shaded
                       packages, base-layer copper tracks + vias (routes.json),
                       pin leads, LOD tiers, selection explode + net tracing,
                       occluder ghosting, ~30 fps cap + idle skip, hit testing
-js/occlude.js         pure board-level occlusion math (package silhouettes vs
-                      copper paths, world space; tested)
+js/occlude.js         pure board-level occlusion math (package board shadows
+                      vs copper paths and TSV drops, world space; tested)
 js/main.js            catalog loading, HUD wiring, debug hooks
 diagrams/             your .puml files + generated index.json + *.routes.json
 samples/              reference diagrams (stock PlantUML comparison)
@@ -192,8 +193,9 @@ node tools/screenshot.mjs http://localhost:8000/ out.png \
 
 Debug hooks on `window.__view` (used by headless screenshots; harmless
 otherwise): `hover(id)`, `select(id)`, `fit()`, `zoom(f)`, read-only `scale`,
-`drawMs` (smoothed draw cost) and `draws` (frames actually painted — with the
-idle skip this stays flat while the page sits still).
+`drawMs` (smoothed draw cost), `draws` (frames actually painted — with the
+idle skip this stays flat while the page sits still) and `state()` (snapshot
+of per-package ghost/explode targets and the current focus set).
 
 See `AGENTS.md` for tooling notes (headless Chromium quirks, PlantUML CLI
 peculiarities).

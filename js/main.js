@@ -226,4 +226,5 @@ window.__view = {
   get scale() { return renderer.scale; },
   get drawMs() { return renderer.drawMs; },
   get draws() { return renderer.draws; },
+  state: () => renderer.debugState(),
 };

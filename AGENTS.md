@@ -290,6 +290,12 @@ second-nature and not using them becomes unimaginable.
   `window.__view.drawMs` / `__view.draws` debug hooks instead: `drawMs` is a
   smoothed per-draw cost (comparable across runs at identical view/zoom), and
   `draws` over a fixed interval verifies the idle skip / fps cap.
+- **Headless viewport ≠ `--window-size`**: with `--window-size=1600,1000` the
+  actual viewport (and `canvas.clientHeight`) is ~913px — headless=new reserves
+  ~87px of virtual window chrome. Hand-computed screen coordinates from the
+  window size are vertically off by half of that; use `innerHeight` or
+  `window.__view.state()`/pixel probes on the canvas instead of assuming the
+  full window height.
 - **PCB routing pipeline** (`npm run route`): relations are autorouted as
   copper on a 2-layer board via KiCad + Freerouting. Peculiarities discovered
   empirically (KiCad 10.0.7, Freerouting 2.5.0):

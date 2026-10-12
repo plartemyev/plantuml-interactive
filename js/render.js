@@ -190,7 +190,22 @@ export function createRenderer(canvas, hooks = {}) {
         focusNets.add(e.fromId);
         focusNets.add(e.toId);
         const rv = e.routeIdx != null ? routeView.get(e.routeIdx) : null;
-        if (rv) paths.push(rv.raw.path);
+        if (!rv) continue;
+        paths.push(rv.raw.path);
+        // TSV drops are part of the connection: a drop point at height z'
+        // projects to the board point pad - (z', z'), so the drop is hidden
+        // exactly where that diagonal segment crosses a package's board
+        // shadow — test it with the same occlusion machinery.
+        for (const end of rv.raw.ends) {
+          if (!end.stacked) continue;
+          const b = scene.byId.get(end.box);
+          if (!b) continue;
+          const zTop = (b.z0 + b.z1) / 2 + LIFT_CHILD;
+          paths.push([
+            [end.land[0], end.land[1]],
+            [end.land[0] - zTop, end.land[1] - zTop],
+          ]);
+        }
       }
       for (const oid of findOccluders(scene.boxes, paths, id)) {
         stateOf(oid).tghost = OCCLUDE_ALPHA;
@@ -1105,6 +1120,17 @@ export function createRenderer(canvas, hooks = {}) {
     },
     debugSelect(id) {
       applySelection(id);
+    },
+    debugState() {
+      const m = {};
+      for (const [id, s] of anim) {
+        if (s.tghost !== 1 || s.tlift !== 0 || s.tdx !== 0 || s.tdy !== 0) {
+          m[id] = { ghost: +s.tghost.toFixed(2), lift: +s.tlift.toFixed(1), dxy: [+s.tdx.toFixed(1), +s.tdy.toFixed(1)] };
+        }
+      }
+      m.__selected = selectedId;
+      m.__focus = [...focusEdges].map((e) => `${e.fromId}->${e.toId}`);
+      return m;
     },
   };
 }
