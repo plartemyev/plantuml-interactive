@@ -62,12 +62,13 @@ Then:
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
 - **click a package** — pin the selection: animated exploded view (children
   spread and lift, relation pins drop as dashed leaders to their landing
-  pads), its nets glow on the copper, and occluding packages fade to 30% so
-  every traced connection stays visible; notes of the package and of its net
-  neighbors appear. **Click empty space** to deselect and revert everything.
+  pads), its nets glow on the copper with their labels, and occluding
+  packages fade to 30% so every traced connection stays visible; notes of
+  the package and of its net neighbors appear. **Click empty space** to
+  deselect and revert everything.
 - **hover a package** — tooltip only (the scene never changes under the cursor)
-- labels and edge labels appear progressively with zoom level (LOD); notes
-  are hidden entirely until a package is selected
+- face labels appear progressively with zoom level (LOD); net labels and
+  notes are hidden entirely until a package is selected
 - rendering is capped at ~30 fps and skips redraws entirely while idle
 
 ## Adding diagrams
@@ -174,7 +175,8 @@ npm test          # or: node --test test/
   selection.
 - Copper routed on the underside (B.Cu) is drawn translucent; it is not
   z-occluded by the board, only styled dimmer.
-- Edge labels show their first line at route midpoint.
+- Edge labels show their first line at route midpoint, only for the traced
+  nets of the selected package.
 - No minimap, no search, no editing — read-only visualization by design.
 
 ## Development

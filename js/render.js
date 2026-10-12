@@ -732,8 +732,9 @@ export function createRenderer(canvas, hooks = {}) {
     ctx.lineCap = 'round';
     if (lod.edgeLabels !== 'none') {
       for (const e of scene.edges) {
-        if (e.hidden || !e.label) continue;
-        if (!focusEdges.has(e) && lod.edgeLabels !== 'all') continue;
+        // net labels are annotations too: only the selected package's
+        // traced nets carry them, never the resting board
+        if (e.hidden || !e.label || !focusEdges.has(e)) continue;
         drawEdgeLabel(e, eff);
       }
     }
@@ -893,11 +894,13 @@ export function createRenderer(canvas, hooks = {}) {
   function lodTier() {
     const s = cam.scale;
     // Low LOD: faces carry only the kind glyph (silk suppressed). From the
-    // middle tier on, silkscreen takes over and glyphs are hidden.
+    // middle tier on, silkscreen takes over and glyphs are hidden. Edge
+    // labels render only for the selected package's traced nets — the
+    // resting board stays free of floating text.
     if (s < 0.3) return { silkDepth: -1, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: true, stereo: false };
     if (s < 0.6) return { silkDepth: -1, leafLines: 0, edgeLabels: 'none', notes: 'none', icons: true, stereo: false };
     if (s < 1.2) return { silkDepth: 99, leafLines: 1, edgeLabels: 'focus', notes: 'collapsed', icons: false, stereo: false };
-    return { silkDepth: 99, leafLines: 99, edgeLabels: 'all', notes: 'full', icons: false, stereo: true };
+    return { silkDepth: 99, leafLines: 99, edgeLabels: 'focus', notes: 'full', icons: false, stereo: true };
   }
 
   // ---- hit testing -------------------------------------------------------
