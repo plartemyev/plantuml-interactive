@@ -13,8 +13,9 @@
 //   node tools/route-board.mjs [--force] [diagram.puml ...]
 //
 // Diagrams whose routes.json is newer than their .puml and the toolchain are
-// skipped unless --force. Freerouting runs headlessly; see kicad_route.py for
-// the toolchain requirements (java >= 25, freerouting.jar).
+// skipped unless --force. Freerouting runs with its GUI disabled (it would
+// otherwise pop a window per run on a desktop); see kicad_route.py for the
+// toolchain requirements (java >= 25, freerouting.jar).
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';

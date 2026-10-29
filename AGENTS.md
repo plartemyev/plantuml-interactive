@@ -329,9 +329,19 @@ second-nature and not using them becomes unimaginable.
     `/usr/lib/jvm/java-27-openjdk/bin/java`; the system default is Java 17.
     The `freerouting-cli-*` native-image binaries crash on DSNs containing
     keepouts (`UnsupportedFeatureError: ObstacleArea serialization`) — use
-    the plain jar, not the CLI distribution. Headless batch:
-    `java -jar freerouting.jar -de x.dsn -do x.ses -mp 40 -mt 1` (exits by
-    itself; `-mt 1` keeps results deterministic).
+    the plain jar, not the CLI distribution. Unattended batch:
+    `java -jar freerouting.jar -de x.dsn -do x.ses --gui.enabled=false
+    --router.autorouter.max_passes=40 -mt 1` (exits by itself; `-mt 1`
+    keeps results deterministic). Without `--gui.enabled=false` v2.5.0
+    OPENS ITS SWING UI whenever a display exists (shows the "Autorouter
+    is about to start" countdown dialog, auto-starts, saves, exits —
+    unattended but visibly windows on the desktop, hit 2026-10-29); with
+    no DISPLAY it falls back to text mode on its own (warns "Couldn't
+    get screen resolution"). The long-option spelling of `-mp` is
+    `--router.autorouter.max_passes=` (plain `-mp` logs a deprecation
+    warning); `--gui.enabled=false` logs "GUI is disabled and you don't
+    have a console available" — expected. There is no `-h`-listed
+    batch/`-headless` flag in v2.5.0.
   - A board with **no via padstack at all** crashes Freerouting 2.5
     (`NullPointerException ... viaRule is null`). Even when vias can never be
     placed (e.g. the F.Cu-only pass blocks B.Cu board-wide, vias included),

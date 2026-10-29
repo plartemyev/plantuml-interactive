@@ -9,7 +9,8 @@ Usage: kicad_route.py SPEC_JSON SES_OUT [--single-layer]
 
 Reads a board spec (see tools/lib/boardgeo.mjs buildBoardSpec), builds a
 KiCad board in memory, exports Specctra DSN, runs the Freerouting autorouter
-headlessly, and copies the resulting .ses session to SES_OUT.
+with its GUI disabled (v2.5.0 otherwise opens its Swing UI when a display
+exists), and copies the resulting .ses session to SES_OUT.
 
 With --single-layer, a board-wide keepout blocks B.Cu (tracks and vias), so
 the router may only use F.Cu. The via padstack stays in the DSN: a board
@@ -178,8 +179,11 @@ def export_dsn(board, keep, dsn_path):
 def run_freerouting(dsn_path, ses_path):
     jar = find_freerouting()
     java = find_java()
+    # --gui.enabled=false: on a desktop v2.5.0 otherwise pops its Swing UI
+    # (countdown dialog, auto-start, auto-save, auto-exit) per invocation.
     cmd = [java, "-Xmx2g", "-jar", jar, "-de", dsn_path, "-do", ses_path,
-           "-mp", "40", "-mt", "1"]
+           "--gui.enabled=false", "--router.autorouter.max_passes=40",
+           "-mt", "1"]
     log_path = os.path.splitext(ses_path)[0] + ".freerouting.log"
     with open(log_path, "w") as log:
         proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
