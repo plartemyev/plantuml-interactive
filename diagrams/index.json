@@ -1,10 +1,12 @@
 {
   "diagrams": [
     "3-tier-web.puml",
+    "architecture_abstract.puml",
     "deployment.puml"
   ],
   "routes": [
     "3-tier-web.routes.json",
+    "architecture_abstract.routes.json",
     "deployment.routes.json"
   ]
 }
