@@ -1,0 +1,30 @@
+services:
+  plantuml-interactive:
+    build: .
+    image: plantuml-interactive:latest
+    container_name: plantuml-interactive
+    ports:
+      - "8080:8080"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    volumes:
+      # live pick-up of re-routed boards (written by the router service below)
+      - ./diagrams:/app/diagrams:ro
+
+  # Same image, routing mode. Regenerates diagrams/*.routes.json in the
+  # checkout (mounted rw); running it as the host uid keeps new files
+  # user-owned:
+  #   docker compose --profile route run --rm router --force
+  router:
+    image: plantuml-interactive:latest
+    build: .
+    profiles:
+      - route
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      HOME: /tmp
+    volumes:
+      - ./diagrams:/app/diagrams
+

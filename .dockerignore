@@ -1,0 +1,14 @@
+# Build-context exclusions: the image copies index.html, css/, js/, tools/
+# (incl. the Freerouting jar), diagrams/ and samples/ (see Dockerfile);
+# everything else is cruft.
+.git
+.gitignore
+.dockerignore
+.tmp
+AGENTS.md
+README.md
+LICENSE
+COPYING
+Dockerfile
+docker-compose.yml
+test

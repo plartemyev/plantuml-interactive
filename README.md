@@ -62,6 +62,24 @@ python3 -m http.server 8000
 # open http://localhost:8000/
 ```
 
+Or run it as a single self-contained service with Docker:
+
+```sh
+docker compose up --build -d   # serves http://localhost:8080
+```
+
+The image carries the static page, the current diagram catalog and the full
+routing toolchain (Node, KiCad `pcbnew`, Java 25 + Freerouting) — boards can
+be re-routed inside the same image, no host toolchain needed:
+
+```sh
+docker compose --profile route run --rm router --force
+```
+
+Re-routed `diagrams/*.routes.json` land in the checkout and are picked up by
+the running service immediately (`diagrams/` is bind-mounted); rebuild to
+bake them into the image.
+
 Then:
 
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
