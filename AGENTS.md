@@ -151,3 +151,27 @@
   - Route freshness: `route-board.mjs` TOOLCHAIN now also includes
     js/parser.js and js/layout.js — pin positions live in the layout, so a
     layout change stales every .routes.json (re-run `npm run route`).
+- **Upload feature** (`PUML_UPLOAD=1`, server/upload-server.mjs, added
+  2026-10-29): env-flag gated; the flag swaps the container CMD between
+  darkhttpd and the node server (same page, plus `/api/*` + the
+  `/api/progress` websocket). Gotchas learned the hard way:
+  - `sweepAll()` must clear the scratch dir's CONTENTS, never `rmSync` the
+    dir itself: in Docker it is a tmpfs mount point on a read-only root FS
+    and removing it fails with EROFS (startup crash, restart loop).
+  - Two server instances share the default scratch (`.tmp/uploads`) and
+    each startup/teardown sweep wipes the other's live jobs — isolate with
+    `PUML_UPLOAD_DIR` before running a second instance on one checkout.
+  - The container needs `PORT=8080` (image ENV) — the server's own default
+    is 8000, and the healthcheck probes 8080.
+  - The node server is the only static server in upload mode; its static
+    handler refuses dotfile path segments (`.tmp`, `.git` unreachable) and
+    defuses `..` by construction (normalize + segment check).
+  - E2E: `tmp/e2e-browser.mjs <base-url>` drives the real picker flow via
+    CDP `DOM.setFileInputFiles` in one chromium session (OPFS must persist
+    across an in-session reload; headless chromium gets a fresh profile per
+    launch, so multi-launch tests would lose OPFS state). Page-context
+    `fetch` POSTs are NOT the app path — `uploadFiles()` bookkeeping
+    (statuses, job id map) is what makes WS events stick to list entries.
+  - Node's built-in WebSocket (undici) refuses to *send* partial upgrade
+    headers client-side — raw `net.connect` is the only way to test
+    handshake rejection server-side.

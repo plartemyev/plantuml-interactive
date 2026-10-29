@@ -155,6 +155,98 @@ html, body {
   color: var(--accent);
 }
 
+/* user-uploaded (OPFS-stored) diagrams get a small accent dot */
+#diagram-items button.local::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  opacity: 0.65;
+  vertical-align: 1px;
+}
+
+/* per-diagram processing bar, driven by real server pipeline stages */
+#diagram-items li.up-error button { color: var(--warn); }
+
+.up-bar {
+  height: 3px;
+  margin: 3px 6px 0;
+  border-radius: 2px;
+  background: rgba(122, 143, 166, 0.25);
+  overflow: hidden;
+}
+
+.up-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+/* while the autorouter runs the fill is too small to show motion on its
+   own — moving stripes say "working" without inventing progress */
+.up-fill.stripe {
+  background-image: repeating-linear-gradient(
+    -55deg,
+    rgba(11, 15, 20, 0.55) 0 3px,
+    transparent 3px 7px
+  );
+  background-size: 12px 100%;
+  animation: up-stripe-flow 0.9s linear infinite;
+}
+
+@keyframes up-stripe-flow {
+  to { background-position: 12px 0; }
+}
+
+.up-fill.failed { background: var(--warn); }
+
+.up-stage {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  padding: 1px 6px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* upload controls at the bottom of the list panel */
+#upload-row {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+#upload-btn {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--panel-border);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+#upload-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+#upload-note {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
 /* tsv lab: parameterized playground for the through-chip via rendering;
    sits under the diagram list (top set from main.js so they never overlap) */
 #tsvlab {

@@ -1379,5 +1379,7 @@ export function createRenderer(canvas, hooks = {}) {
       m.__focus = [...focusEdges].map((e) => `${e.fromId}->${e.toId}`);
       return m;
     },
+    // whether the current scene carries routed copper (debug/tests)
+    get hasRoutes() { return !!scene?.routes; },
   };
 }

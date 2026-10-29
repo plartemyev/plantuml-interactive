@@ -80,6 +80,36 @@ Re-routed `diagrams/*.routes.json` land in the checkout and are picked up by
 the running service immediately (`diagrams/` is bind-mounted); rebuild to
 bake them into the image.
 
+### Uploading your own diagrams
+
+The page can also route *your* `.puml` files — a major feature, disabled
+unless the server is started with `PUML_UPLOAD` enabled:
+
+```sh
+PUML_UPLOAD=1 npm run serve:upload            # dev: http://localhost:8000
+PUML_UPLOAD=1 docker compose up --build -d    # container: http://localhost:8080
+```
+
+When the feature is on, the diagram list gains an **upload** control: pick up
+to **100 `.puml` files** at once (deployment-style syntax, same subset as the
+catalog). What happens to them:
+
+- **Sources and routed artifacts live in your browser** (Origin Private File
+  System): they survive reloads and server restarts, and never depend on
+  server-side storage. A dot marks uploaded entries in the list.
+- The server keeps each upload only **for the duration of routing** — in
+  memory while parsing, in a scratch dir that is wiped the moment the routed
+  artifact is fetched (or after a short grace period at the latest; startup,
+  teardown and TTL sweeps guarantee cleanup even for abandoned jobs). With
+  the Docker setup the scratch is a tmpfs and dies with the container.
+- Routing runs sequentially in the background; **you can keep exploring**
+  every already-available diagram meanwhile. Each list entry shows a loading
+  bar driven by the real pipeline stages (`preprocessing → routing (pass 1
+  F.Cu / pass 2 both layers) → finishing`) over a WebSocket.
+- When routing finishes, the copper appears for that diagram (reload if it is
+  open). Diagrams whose routing fails stay usable with the airborne-wires
+  fallback — uploading never blocks rendering.
+
 Then:
 
 - **drag** — pan · **wheel** — zoom · **dblclick** — fit to view
@@ -116,6 +146,10 @@ Then:
 If more than one diagram is listed, a selector appears in the top-right
 corner; the first naturally-sorted diagram (`3-tier-web` before
 `deployment-10` before `deployment-2`) loads on start.
+
+No checkout? With the upload feature enabled (above) you can drop `.puml`
+files straight onto the running page — they are routed on the spot and kept
+in your browser (see "Uploading your own diagrams").
 
 ## Supported .puml subset
 
@@ -164,11 +198,22 @@ js/occlude.js         pure board-level occlusion math (package board shadows
 js/tsv.js             pure TSV geometry: per-package column pieces, radii
                       and core-nub spec (tested)
 js/main.js            catalog loading, HUD wiring, debug hooks
+js/uploads.js         upload feature client: OPFS storage of sources +
+                      routed artifacts, progress websocket, batch uploads
+                      (active only when the server enables uploads)
+js/upload-name.js     shared upload file-name rules (browser + server)
+server/upload-server.mjs  static server + env-gated upload feature:
+                      POST /api/diagrams, /api/progress websocket, job
+                      queue over tools/lib/route.mjs, guaranteed scratch
+                      cleanup (per-job, TTL, startup/teardown sweeps)
+server/lib/ws.mjs     minimal RFC 6455 websocket server (no dependencies)
 diagrams/             your .puml files + generated index.json + *.routes.json
 samples/              reference diagrams (stock PlantUML comparison)
 tools/update-index.mjs  rebuilds diagrams/index.json
 tools/route-board.mjs   PCB routing driver (layout -> board spec -> KiCad ->
                         Freerouting -> diagrams/<name>.routes.json)
+tools/lib/route.mjs     the routing pipeline as a callable unit (driver +
+                        upload server share it; onStage reports the passes)
 tools/lib/boardgeo.mjs  pure board geometry + Specctra .ses parsing (tested)
 tools/kicad_route.py    builds the KiCad board, exports DSN, runs Freerouting
 tools/vendor/           freerouting.jar (not committed)
@@ -223,10 +268,11 @@ npm test          # or: node --test test/
 ## Development
 
 ```sh
-npm run serve      # python3 -m http.server 8000
-npm test           # unit tests
-npm run index      # regenerate diagrams/index.json
-npm run route      # re-route the boards (KiCad + Freerouting toolchain)
+npm run serve        # python3 -m http.server 8000
+npm run serve:upload # node server, upload feature on (PUML_UPLOAD=1), :8000
+npm test             # unit tests (incl. upload server, websocket, names)
+npm run index        # regenerate diagrams/index.json
+npm run route        # re-route the boards (KiCad + Freerouting toolchain)
 node tools/screenshot.mjs http://localhost:8000/ out.png \
      'window.__view.select("ecs")'   # scripted interactive screenshots
 ```

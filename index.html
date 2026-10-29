@@ -28,6 +28,12 @@
   <nav id="diagram-list" class="panel" hidden>
     <div class="panel-caption">diagrams</div>
     <ul id="diagram-items"></ul>
+    <!-- upload feature: revealed only when the server runs with PUML_UPLOAD -->
+    <div id="upload-row" hidden>
+      <input id="upload-input" type="file" multiple accept=".puml,text/plain" hidden>
+      <button id="upload-btn" type="button" title="Upload up to 100 .puml files; stored in this browser (OPFS), routed on the server">+ upload diagrams…</button>
+      <div id="upload-note" hidden></div>
+    </div>
   </nav>
 
   <!-- hidden experiment panel; reveal with ?tsvlab=1 (see js/main.js) -->

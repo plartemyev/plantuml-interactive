@@ -8,6 +8,7 @@
   "scripts": {
     "test": "node --test test/",
     "serve": "python3 -m http.server 8000",
+    "serve:upload": "PUML_UPLOAD=1 node server/upload-server.mjs",
     "index": "node tools/update-index.mjs",
     "route": "node tools/route-board.mjs"
   }

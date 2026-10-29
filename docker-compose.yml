@@ -9,6 +9,21 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    environment:
+      HOME: /tmp
+      # Upload feature (env-flag gated). With PUML_UPLOAD=1 the container
+      # swaps darkhttpd for the node server: same page on :8080, plus
+      # POST /api/diagrams (up to 100 .puml per batch) and the
+      # /api/progress websocket. Uploaded sources live in the visitors'
+      # browsers (OPFS); the server holds each one only for the duration
+      # of routing, in a tmpfs scratch wiped per job, at startup, on
+      # SIGTERM and with the container itself:
+      #
+      #   PUML_UPLOAD=1 docker compose up --build -d
+      PUML_UPLOAD: "${PUML_UPLOAD:-}"
+    tmpfs:
+      - /tmp
+      - /app/.tmp/uploads:size=268435456
     volumes:
       # live pick-up of re-routed boards (written by the router service below)
       - ./diagrams:/app/diagrams:ro

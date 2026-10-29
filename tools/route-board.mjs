@@ -18,12 +18,10 @@
 // toolchain requirements (java >= 25, freerouting.jar).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parsePlantUml } from '../js/parser.js';
-import { buildScene } from '../js/layout.js';
-import { buildBoardSpec, sesToWorld, chainSegments } from './lib/boardgeo.mjs';
+import { prepareDiagram, routeBoard } from './lib/route.mjs';
 import { naturalSort } from '../js/natsort.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -79,8 +77,17 @@ async function main() {
       continue;
     }
     try {
-      const scene = buildScene(parsePlantUml(readFileSync(pumlPath, 'utf8')));
-      await routeDiagram(base, scene, routesPath);
+      const { scene, spec } = prepareDiagram(readFileSync(pumlPath, 'utf8'));
+      const res = await routeBoard({
+        scene, spec, tmpDir, base, routesPath,
+        runRouter: (specPath, sesPath, singleLayer) => spawnRouter(specPath, sesPath, singleLayer),
+        onStage: (stage, detail, info) => {
+          if (detail === 'pass 2 (F.Cu+B.Cu)') {
+            console.log(`${base}: F.Cu-only left ${info.unrouted} net(s) unrouted, retrying on 2 layers`);
+          }
+        },
+      });
+      console.log(`routed ${base}: ${res.routed}/${res.nets} nets`);
       routed++;
     } catch (err) {
       failed++;
@@ -100,69 +107,6 @@ function spawnRouter(specPath, sesPath, singleLayer) {
   });
   if (py.error) throw py.error;
   if (py.status !== 0) throw new Error(`kicad_route.py exited ${py.status}`);
-}
-
-// Chains every net's routed segments pad-to-pad; returns the per-net map for
-// routes.json plus the count of nets whose chain reached the far pad.
-function chainNets(scene, spec, world) {
-  const nets = {};
-  let okCount = 0;
-  for (const net of spec.nets) {
-    const g = world.nets[net.name] ?? { segments: [], vias: [] };
-    const edge = scene.edges[net.index];
-    const ends = net.pads.map((p, k) => ({
-      box: k === 0 ? edge.fromId : edge.toId,
-      land: [p.x, p.y],
-      stacked: !!scene.byId.get(k === 0 ? edge.fromId : edge.toId).parentId,
-    }));
-    const pads = net.pads;
-    const chained = chainSegments(
-      g.segments,
-      pads[0] ? [pads[0].x, pads[0].y] : [NaN, NaN],
-      pads[1] ? [pads[1].x, pads[1].y] : null,
-    );
-    const unrouted = chained === null;
-    const path = unrouted ? [] : chained;
-    const segs = unrouted ? [] : chained.segs;
-    if (!unrouted) okCount++;
-    nets[String(net.index)] = {
-      path,
-      segs,
-      vias: g.vias,
-      ends,
-      unrouted,
-    };
-  }
-  return { nets, okCount };
-}
-
-async function routeDiagram(base, scene, routesPath) {
-  const spec = buildBoardSpec(scene);
-  const specPath = join(tmpDir, `${base}.spec.json`);
-  const sesPath = join(tmpDir, `${base}.ses`);
-  writeFileSync(specPath, JSON.stringify(spec));
-
-  // Pass 1: F.Cu only. Pass 2 (both layers) only when pass 1 leaves a net
-  // unrouted.
-  spawnRouter(specPath, sesPath, true);
-  let world = sesToWorld(readFileSync(sesPath, 'utf8'));
-  let res = chainNets(scene, spec, world);
-  if (res.okCount < spec.nets.length) {
-    console.log(`${base}: F.Cu-only left ${spec.nets.length - res.okCount} net(s) unrouted, retrying on 2 layers`);
-    spawnRouter(specPath, sesPath, false);
-    world = sesToWorld(readFileSync(sesPath, 'utf8'));
-    res = chainNets(scene, spec, world);
-  }
-
-  const out = {
-    version: 1,
-    traceW: spec.traceW,
-    padR: spec.padD / 2,
-    viaR: spec.viaD / 2,
-    nets: res.nets,
-  };
-  writeFileSync(routesPath, JSON.stringify(out) + '\n');
-  console.log(`routed ${base}: ${res.okCount}/${spec.nets.length} nets`);
 }
 
 main();
